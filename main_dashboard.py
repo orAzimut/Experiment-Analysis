@@ -299,7 +299,7 @@ class MultiExperimentAnalyzer:
             "50,000-100,000", "100,000-500,000", "500,000-1,000,000",
             "1,000,000-2,000,000"
         ]
-        ####change
+        
         # Get actual categories present in the data
         actual_categories = data['area_category'].unique()
         
@@ -1371,10 +1371,13 @@ def fp_analysis_page(analyzer):
             fig_dist.update_xaxes(tickangle=45)
             st.plotly_chart(fig_dist, use_container_width=True)
     
-    # FP Area Distribution - Separate by Experiment
+    # FP Area Distribution - Separate by Experiment (FIXED WITH CHRONOLOGICAL ORDER)
     st.subheader("📐 FP Area Distribution by Experiment")
     
     if 'area_category' in combined_fp.columns:
+        # Get the chronological order for area categories
+        area_category_order = analyzer._get_area_category_order(combined_fp)
+        
         if len(experiment_ids) > 1:
             cols = st.columns(len(experiment_ids))
             
@@ -1389,7 +1392,11 @@ def fp_analysis_page(analyzer):
                             title=f"FP Area Distribution - {exp_id}",
                             labels={'area_category': 'Area Category', 'count': 'FP Count'}
                         )
-                        fig_area.update_xaxes(tickangle=45)
+                        fig_area.update_xaxes(
+                            tickangle=45,
+                            categoryorder='array',
+                            categoryarray=area_category_order
+                        )
                         fig_area.update_layout(height=400)
                         st.plotly_chart(fig_area, use_container_width=True)
                 else:
@@ -1407,7 +1414,11 @@ def fp_analysis_page(analyzer):
                     title=f"FP Area Distribution - {exp_id} (Filtered Data)",
                     labels={'area_category': 'Area Category', 'count': 'FP Count'}
                 )
-                fig_area.update_xaxes(tickangle=45)
+                fig_area.update_xaxes(
+                    tickangle=45,
+                    categoryorder='array',
+                    categoryarray=area_category_order
+                )
                 st.plotly_chart(fig_area, use_container_width=True)
     
     # FP Heatmap - Separate by Experiment
@@ -1706,10 +1717,13 @@ def fn_analysis_page(analyzer):
             fig_dist.update_xaxes(tickangle=45)
             st.plotly_chart(fig_dist, use_container_width=True)
     
-    # FN Area Distribution - Separate by Experiment
+    # FN Area Distribution - Separate by Experiment (FIXED WITH CHRONOLOGICAL ORDER)
     st.subheader("📐 FN Area Distribution by Experiment")
     
     if 'area_category' in combined_fn.columns:
+        # Get the chronological order for area categories
+        area_category_order = analyzer._get_area_category_order(combined_fn)
+        
         if len(experiment_ids) > 1:
             cols = st.columns(len(experiment_ids))
             
@@ -1724,7 +1738,11 @@ def fn_analysis_page(analyzer):
                             title=f"FN Area Distribution - {exp_id}",
                             labels={'area_category': 'Area Category', 'count': 'FN Count'}
                         )
-                        fig_area.update_xaxes(tickangle=45)
+                        fig_area.update_xaxes(
+                            tickangle=45,
+                            categoryorder='array',
+                            categoryarray=area_category_order
+                        )
                         fig_area.update_layout(height=400)
                         st.plotly_chart(fig_area, use_container_width=True)
                 else:
@@ -1742,7 +1760,11 @@ def fn_analysis_page(analyzer):
                     title=f"FN Area Distribution - {exp_id} (Filtered Data)",
                     labels={'area_category': 'Area Category', 'count': 'FN Count'}
                 )
-                fig_area.update_xaxes(tickangle=45)
+                fig_area.update_xaxes(
+                    tickangle=45,
+                    categoryorder='array',
+                    categoryarray=area_category_order
+                )
                 st.plotly_chart(fig_area, use_container_width=True)
     
     # FN Heatmap - Separate by Experiment
