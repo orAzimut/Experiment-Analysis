@@ -240,10 +240,6 @@ class MultiExperimentAnalyzer:
             return pd.Series([f"Area_{int(min_area)}"] * len(areas), index=areas.index)
         
         # Optimal bin edges based on data analysis (chronologically ordered)
-        # These bins are designed to:
-        # 1. Provide good granularity where most data is concentrated (0-1,000)
-        # 2. Be meaningful for analysis (based on percentiles and FP/FN patterns)
-        # 3. Show chronologically from smallest to largest
         optimal_bin_edges = [
             min_area,  # Start from minimum
             50,        # Small objects (5.9% of data)
@@ -268,25 +264,22 @@ class MultiExperimentAnalyzer:
         # Remove duplicate edges and sort
         bin_edges = sorted(list(set(filtered_edges)))
         
-        # Create chronologically ordered labels (smallest to largest) with prefix for sorting
+        # Create clean chronologically ordered labels (no ugly prefixes)
         bin_labels = []
         for i in range(len(bin_edges) - 1):
             start = int(bin_edges[i])
             end = int(bin_edges[i + 1])
             
-            # Add zero-padding prefix to ensure chronological sorting
-            # Format: "01: 1-50", "02: 50-100", etc.
-            prefix = f"{i+1:02d}: "
-            
-            # Format with commas for readability
+            # Format with commas for readability - clean labels only
             if start < 1000 and end < 1000:
-                label = f"{prefix}{start}-{end}"
+                bin_labels.append(f"{start}-{end}")
             elif start < 1000:
-                label = f"{prefix}{start}-{end:,}"
+                bin_labels.append(f"{start}-{end:,}")
             else:
-                label = f"{prefix}{start:,}-{end:,}"
-                
-            bin_labels.append(label)
+                bin_labels.append(f"{start:,}-{end:,}")
+        
+        # Store the correct order for later use
+        self._area_category_order = bin_labels.copy()
         
         # Categorize using the optimal bins with ordered categories
         categorized = pd.cut(areas, bins=bin_edges, labels=bin_labels, include_lowest=True, ordered=True)
@@ -296,6 +289,33 @@ class MultiExperimentAnalyzer:
         categorized = categorized.replace('nan', 'Unknown')
         
         return categorized
+    
+    def _get_area_category_order(self, data):
+        """Get the correct chronological order for area categories"""
+        # Define the expected order based on our binning logic
+        expected_order = [
+            "1-50", "50-100", "100-200", "200-400", "400-1,000",
+            "1,000-5,000", "5,000-20,000", "20,000-50,000", 
+            "50,000-100,000", "100,000-500,000", "500,000-1,000,000",
+            "1,000,000-2,000,000"
+        ]
+        
+        # Get actual categories present in the data
+        actual_categories = data['area_category'].unique()
+        
+        # Filter expected order to only include categories that actually exist
+        ordered_categories = [cat for cat in expected_order if cat in actual_categories]
+        
+        # Add any unexpected categories at the end
+        for cat in actual_categories:
+            if cat not in ordered_categories and cat != 'Unknown':
+                ordered_categories.append(cat)
+        
+        # Add Unknown at the end if it exists
+        if 'Unknown' in actual_categories:
+            ordered_categories.append('Unknown')
+        
+        return ordered_categories
     
     def _calculate_train_distribution(self) -> Dict:
         """Calculate class distribution from training data (Excel/CSV format)"""
