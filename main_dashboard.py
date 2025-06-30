@@ -292,28 +292,26 @@ class MultiExperimentAnalyzer:
     
     def _get_area_category_order(self, data):
         """Get the correct chronological order for area categories"""
-        # Define the expected order based on our binning logic
-        expected_order = [
-            "1-50", "50-100", "100-200", "200-400", "400-1,000",
-            "1,000-5,000", "5,000-20,000", "20,000-50,000", 
-            "50,000-100,000", "100,000-500,000", "500,000-1,000,000",
-            "1,000,000-2,000,000"
-        ]
+        import re
         
         # Get actual categories present in the data
-        actual_categories = data['area_category'].unique()
+        actual_categories = list(data['area_category'].unique())
         
-        # Filter expected order to only include categories that actually exist
-        ordered_categories = [cat for cat in expected_order if cat in actual_categories]
+        def extract_start_number(category):
+            """Extract the starting number from area category for sorting"""
+            if category == 'Unknown':
+                return float('inf')  # Put Unknown at the end
+            
+            # Extract the first number from strings like "1-50", "1,000-5,000", etc.
+            # Remove commas first, then extract number
+            clean_cat = str(category).replace(',', '')
+            match = re.match(r'(\d+)', clean_cat)
+            if match:
+                return int(match.group(1))
+            return 0
         
-        # Add any unexpected categories at the end
-        for cat in actual_categories:
-            if cat not in ordered_categories and cat != 'Unknown':
-                ordered_categories.append(cat)
-        
-        # Add Unknown at the end if it exists
-        if 'Unknown' in actual_categories:
-            ordered_categories.append('Unknown')
+        # Sort categories by their starting number
+        ordered_categories = sorted(actual_categories, key=extract_start_number)
         
         return ordered_categories
     
