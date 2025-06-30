@@ -225,7 +225,7 @@ class MultiExperimentAnalyzer:
             st.error(f"❌ Error processing data: {str(e)}")
             return None
     
-    def _categorize_area(self, areas: pd.Series) -> pd.Series:
+   def _categorize_area(self, areas: pd.Series) -> pd.Series:
         """Categorize areas with optimal bins based on data distribution analysis"""
         # Remove NaN values for calculation
         valid_areas = areas.dropna()
@@ -268,24 +268,30 @@ class MultiExperimentAnalyzer:
         # Remove duplicate edges and sort
         bin_edges = sorted(list(set(filtered_edges)))
         
-        # Create chronologically ordered labels (smallest to largest)
+        # Create chronologically ordered labels (smallest to largest) with prefix for sorting
         bin_labels = []
         for i in range(len(bin_edges) - 1):
             start = int(bin_edges[i])
             end = int(bin_edges[i + 1])
             
+            # Add zero-padding prefix to ensure chronological sorting
+            # Format: "01: 1-50", "02: 50-100", etc.
+            prefix = f"{i+1:02d}: "
+            
             # Format with commas for readability
             if start < 1000 and end < 1000:
-                bin_labels.append(f"{start}-{end}")
+                label = f"{prefix}{start}-{end}"
             elif start < 1000:
-                bin_labels.append(f"{start}-{end:,}")
+                label = f"{prefix}{start}-{end:,}"
             else:
-                bin_labels.append(f"{start:,}-{end:,}")
+                label = f"{prefix}{start:,}-{end:,}"
+                
+            bin_labels.append(label)
         
-        # Categorize using the optimal bins
-        categorized = pd.cut(areas, bins=bin_edges, labels=bin_labels, include_lowest=True)
+        # Categorize using the optimal bins with ordered categories
+        categorized = pd.cut(areas, bins=bin_edges, labels=bin_labels, include_lowest=True, ordered=True)
         
-        # Convert to string to avoid categorical issues, then handle NaN
+        # Convert to string but preserve the order information
         categorized = categorized.astype(str)
         categorized = categorized.replace('nan', 'Unknown')
         
