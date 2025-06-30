@@ -299,7 +299,7 @@ class MultiExperimentAnalyzer:
             "50,000-100,000", "100,000-500,000", "500,000-1,000,000",
             "1,000,000-2,000,000"
         ]
-        
+        ####change
         # Get actual categories present in the data
         actual_categories = data['area_category'].unique()
         
