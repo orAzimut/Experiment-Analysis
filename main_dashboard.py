@@ -225,7 +225,7 @@ class MultiExperimentAnalyzer:
             st.error(f"❌ Error processing data: {str(e)}")
             return None
     
-   def _categorize_area(self, areas: pd.Series) -> pd.Series:
+    def _categorize_area(self, areas: pd.Series) -> pd.Series:
         """Categorize areas with optimal bins based on data distribution analysis"""
         # Remove NaN values for calculation
         valid_areas = areas.dropna()
