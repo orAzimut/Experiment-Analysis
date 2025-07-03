@@ -78,8 +78,26 @@ def create_summary_filters(analyzer, page_name="Summary Analysis"):
         'classes': selected_classes
     }
 
-def calculate_experiment_metrics(analyzer, filters):
-    """Calculate comprehensive metrics for all experiments with filters"""
+def filter_data_by_analysis_mode(data, analysis_mode):
+    """Filter data based on global analysis mode"""
+    if analysis_mode == "Detection":
+        # Detection analysis: only detection-related data
+        return data[
+            (data['mistake_kind'] == 'TP') |
+            ((data['mistake_kind'] == 'FP') & (data['class_mistake'] == 'background')) |
+            ((data['mistake_kind'] == 'FN') & (data['class_mistake'] == 'background'))
+        ]
+    elif analysis_mode == "Classification":
+        # Classification analysis: only classification-related data
+        return data[
+            (data['mistake_kind'] == 'TP') |
+            ((data['mistake_kind'] == 'FP') & (data['class_mistake'] != 'background') & (data['class_mistake'] != '-'))
+        ]
+    else:  # "All Data"
+        return data
+
+def calculate_experiment_metrics(analyzer, filters, analysis_mode):
+    """Calculate comprehensive metrics for all experiments with filters and analysis mode"""
     experiment_metrics = {}
     
     for exp_id in filters.get('experiments', []):
@@ -91,13 +109,35 @@ def calculate_experiment_metrics(analyzer, filters):
         if filters:
             exp_data = analyzer._apply_filters(exp_data, filters)
         
+        # Apply analysis mode filtering
+        exp_data = filter_data_by_analysis_mode(exp_data, analysis_mode)
+        
         if len(exp_data) == 0:
             continue
         
-        # Calculate overall metrics
-        tp_count = len(exp_data[exp_data['mistake_kind'] == 'TP'])
-        fp_count = len(exp_data[exp_data['mistake_kind'] == 'FP'])
-        fn_count = len(exp_data[exp_data['mistake_kind'] == 'FN'])
+        # Calculate overall metrics based on analysis mode
+        if analysis_mode == "Detection":
+            tp_count = len(exp_data[exp_data['mistake_kind'] == 'TP'])
+            fp_count = len(exp_data[
+                (exp_data['mistake_kind'] == 'FP') & 
+                (exp_data['class_mistake'] == 'background')
+            ])
+            fn_count = len(exp_data[
+                (exp_data['mistake_kind'] == 'FN') & 
+                (exp_data['class_mistake'] == 'background')
+            ])
+        elif analysis_mode == "Classification":
+            tp_count = len(exp_data[exp_data['mistake_kind'] == 'TP'])
+            fp_count = len(exp_data[
+                (exp_data['mistake_kind'] == 'FP') & 
+                (exp_data['class_mistake'] != 'background') &
+                (exp_data['class_mistake'] != '-')
+            ])
+            fn_count = fp_count  # Mirror relationship in classification
+        else:  # "All Data"
+            tp_count = len(exp_data[exp_data['mistake_kind'] == 'TP'])
+            fp_count = len(exp_data[exp_data['mistake_kind'] == 'FP'])
+            fn_count = len(exp_data[exp_data['mistake_kind'] == 'FN'])
         
         precision = tp_count / (tp_count + fp_count) if (tp_count + fp_count) > 0 else 0
         recall = tp_count / (tp_count + fn_count) if (tp_count + fn_count) > 0 else 0
@@ -108,9 +148,28 @@ def calculate_experiment_metrics(analyzer, filters):
         for cls in exp_data['cls_name'].unique():
             cls_data = exp_data[exp_data['cls_name'] == cls]
             
-            cls_tp = len(cls_data[cls_data['mistake_kind'] == 'TP'])
-            cls_fp = len(cls_data[cls_data['mistake_kind'] == 'FP'])
-            cls_fn = len(cls_data[cls_data['mistake_kind'] == 'FN'])
+            if analysis_mode == "Detection":
+                cls_tp = len(cls_data[cls_data['mistake_kind'] == 'TP'])
+                cls_fp = len(cls_data[
+                    (cls_data['mistake_kind'] == 'FP') & 
+                    (cls_data['class_mistake'] == 'background')
+                ])
+                cls_fn = len(cls_data[
+                    (cls_data['mistake_kind'] == 'FN') & 
+                    (cls_data['class_mistake'] == 'background')
+                ])
+            elif analysis_mode == "Classification":
+                cls_tp = len(cls_data[cls_data['mistake_kind'] == 'TP'])
+                cls_fp = len(cls_data[
+                    (cls_data['mistake_kind'] == 'FP') & 
+                    (cls_data['class_mistake'] != 'background') &
+                    (cls_data['class_mistake'] != '-')
+                ])
+                cls_fn = cls_fp  # Mirror relationship
+            else:  # "All Data"
+                cls_tp = len(cls_data[cls_data['mistake_kind'] == 'TP'])
+                cls_fp = len(cls_data[cls_data['mistake_kind'] == 'FP'])
+                cls_fn = len(cls_data[cls_data['mistake_kind'] == 'FN'])
             
             cls_precision = cls_tp / (cls_tp + cls_fp) if (cls_tp + cls_fp) > 0 else 0
             cls_recall = cls_tp / (cls_tp + cls_fn) if (cls_tp + cls_fn) > 0 else 0
@@ -141,8 +200,8 @@ def calculate_experiment_metrics(analyzer, filters):
     
     return experiment_metrics
 
-def calculate_class_distributions(analyzer, exp_id, filters):
-    """Calculate apriori distributions and FP/FN shares for classes"""
+def calculate_class_distributions(analyzer, exp_id, filters, analysis_mode):
+    """Calculate apriori distributions and FP/FN shares for classes with analysis mode"""
     if exp_id not in analyzer.experiments:
         return None
     
@@ -151,6 +210,9 @@ def calculate_class_distributions(analyzer, exp_id, filters):
     if filters:
         exp_data = analyzer._apply_filters(exp_data, filters)
     
+    # Apply analysis mode filtering
+    exp_data = filter_data_by_analysis_mode(exp_data, analysis_mode)
+    
     if len(exp_data) == 0:
         return None
     
@@ -158,7 +220,23 @@ def calculate_class_distributions(analyzer, exp_id, filters):
     gt_counts = {}
     for cls in exp_data['cls_name'].unique():
         cls_data = exp_data[exp_data['cls_name'] == cls]
-        gt_count = len(cls_data[cls_data['mistake_kind'].isin(['TP', 'FN'])])
+        if analysis_mode == "Detection":
+            gt_count = len(cls_data[cls_data['mistake_kind'].isin(['TP'])])
+            gt_count += len(cls_data[
+                (cls_data['mistake_kind'] == 'FN') & 
+                (cls_data['class_mistake'] == 'background')
+            ])
+        elif analysis_mode == "Classification":
+            gt_count = len(cls_data[cls_data['mistake_kind'].isin(['TP'])])
+            # For classification, FN is mirrored from FP
+            gt_count += len(cls_data[
+                (cls_data['mistake_kind'] == 'FP') & 
+                (cls_data['class_mistake'] != 'background') &
+                (cls_data['class_mistake'] != '-')
+            ])
+        else:  # "All Data"
+            gt_count = len(cls_data[cls_data['mistake_kind'].isin(['TP', 'FN'])])
+            
         if gt_count > 0:
             gt_counts[cls] = gt_count
     
@@ -173,8 +251,26 @@ def calculate_class_distributions(analyzer, exp_id, filters):
     
     for cls in exp_data['cls_name'].unique():
         cls_data = exp_data[exp_data['cls_name'] == cls]
-        fp_counts[cls] = len(cls_data[cls_data['mistake_kind'] == 'FP'])
-        fn_counts[cls] = len(cls_data[cls_data['mistake_kind'] == 'FN'])
+        
+        if analysis_mode == "Detection":
+            fp_counts[cls] = len(cls_data[
+                (cls_data['mistake_kind'] == 'FP') & 
+                (cls_data['class_mistake'] == 'background')
+            ])
+            fn_counts[cls] = len(cls_data[
+                (cls_data['mistake_kind'] == 'FN') & 
+                (cls_data['class_mistake'] == 'background')
+            ])
+        elif analysis_mode == "Classification":
+            fp_counts[cls] = len(cls_data[
+                (cls_data['mistake_kind'] == 'FP') & 
+                (cls_data['class_mistake'] != 'background') &
+                (cls_data['class_mistake'] != '-')
+            ])
+            fn_counts[cls] = fp_counts[cls]  # Mirror relationship
+        else:  # "All Data"
+            fp_counts[cls] = len(cls_data[cls_data['mistake_kind'] == 'FP'])
+            fn_counts[cls] = len(cls_data[cls_data['mistake_kind'] == 'FN'])
     
     total_fp = sum(fp_counts.values())
     total_fn = sum(fn_counts.values())
@@ -191,12 +287,12 @@ def calculate_class_distributions(analyzer, exp_id, filters):
         'gt_counts': gt_counts
     }
 
-def most_problematic_classes_analysis(analyzer, filters):
-    """Analyze most problematic classes based on apriori vs FP/FN share"""
-    st.subheader("🚨 Most Problematic Classes")
+def most_problematic_classes_analysis(analyzer, filters, analysis_mode):
+    """Analyze most problematic classes based on apriori vs FP/FN share with analysis mode"""
+    st.subheader(f"🚨 Most Problematic Classes ({analysis_mode} Mode)")
     
     for exp_id in filters.get('experiments', []):
-        dist_data = calculate_class_distributions(analyzer, exp_id, filters)
+        dist_data = calculate_class_distributions(analyzer, exp_id, filters, analysis_mode)
         if not dist_data:
             continue
         
@@ -261,7 +357,7 @@ def most_problematic_classes_analysis(analyzer, filters):
                     # Filter by size and recalculate
                     size_filters = filters.copy()
                     size_filters['sizes'] = [size]
-                    size_dist_data = calculate_class_distributions(analyzer, exp_id, size_filters)
+                    size_dist_data = calculate_class_distributions(analyzer, exp_id, size_filters, analysis_mode)
                     
                     if size_dist_data:
                         size_problematic = []
@@ -289,11 +385,11 @@ def most_problematic_classes_analysis(analyzer, filters):
                         else:
                             st.write("  • No problematic classes for this size")
         else:
-            st.info(f"No problematic classes found for {exp_id}")
+            st.info(f"No problematic classes found for {exp_id} in {analysis_mode} mode")
 
-def top_performing_classes_by_gap(analyzer, filters, experiments):
-    """Analyze top performing classes based on gap logic"""
-    st.write("### 🏆 Top Performing Classes (by Gap Logic)")
+def top_performing_classes_by_gap(analyzer, filters, experiments, analysis_mode):
+    """Analyze top performing classes based on gap logic with analysis mode"""
+    st.write(f"### 🏆 Top Performing Classes ({analysis_mode} Mode)")
     
     # Create columns for side-by-side display
     cols = st.columns(len(experiments))
@@ -302,7 +398,7 @@ def top_performing_classes_by_gap(analyzer, filters, experiments):
         with cols[idx]:
             st.write(f"**{exp_id}**")
             
-            dist_data = calculate_class_distributions(analyzer, exp_id, filters)
+            dist_data = calculate_class_distributions(analyzer, exp_id, filters, analysis_mode)
             if not dist_data:
                 st.info("No data available")
                 continue
@@ -345,13 +441,13 @@ def top_performing_classes_by_gap(analyzer, filters, experiments):
                 styled_df = display_df.style.applymap(highlight_good)
                 st.dataframe(styled_df, use_container_width=True, height=230)
             else:
-                st.info("No classes performing better than expected in both FP and FN")
+                st.info(f"No classes performing better than expected in both FP and FN ({analysis_mode} mode)")
 
-def top_worst_performing_by_f1(analyzer, filters, experiments):
-    """Show top and worst performing classes by F1 score"""
-    st.write("### 📊 Top/Worst Performing Classes by F1 Score")
+def top_worst_performing_by_f1(analyzer, filters, experiments, analysis_mode):
+    """Show top and worst performing classes by F1 score with analysis mode"""
+    st.write(f"### 📊 Top/Worst Performing Classes by F1 Score ({analysis_mode} Mode)")
     
-    metrics = calculate_experiment_metrics(analyzer, filters)
+    metrics = calculate_experiment_metrics(analyzer, filters, analysis_mode)
     
     # Create columns for side-by-side display
     cols = st.columns(len(experiments))
@@ -434,11 +530,11 @@ def top_worst_performing_by_f1(analyzer, filters, experiments):
                 styled_df = perf_df.style.apply(style_row, axis=1)
                 st.dataframe(styled_df, use_container_width=True, height=450)
 
-def performance_gap_analysis(analyzer, filters):
-    """Analyze performance gaps between experiments"""
-    st.subheader("📊 Performance Gap Analysis")
+def performance_gap_analysis(analyzer, filters, analysis_mode):
+    """Analyze performance gaps between experiments with analysis mode"""
+    st.subheader(f"📊 Performance Gap Analysis ({analysis_mode} Mode)")
     
-    metrics = calculate_experiment_metrics(analyzer, filters)
+    metrics = calculate_experiment_metrics(analyzer, filters, analysis_mode)
     
     if len(metrics) < 2:
         st.warning("Need at least 2 experiments for gap analysis.")
@@ -482,11 +578,11 @@ def performance_gap_analysis(analyzer, filters):
     
     return gaps_df, comparison_df
 
-def experiment_to_experiment_changes(analyzer, filters):
-    """Show experiment-to-experiment changes"""
-    st.subheader("🔄 Experiment-to-Experiment Changes")
+def experiment_to_experiment_changes(analyzer, filters, analysis_mode):
+    """Show experiment-to-experiment changes with analysis mode"""
+    st.subheader(f"🔄 Experiment-to-Experiment Changes ({analysis_mode} Mode)")
     
-    metrics = calculate_experiment_metrics(analyzer, filters)
+    metrics = calculate_experiment_metrics(analyzer, filters, analysis_mode)
     experiments = list(metrics.keys())
     
     if len(experiments) < 2:
@@ -500,14 +596,14 @@ def experiment_to_experiment_changes(analyzer, filters):
         baseline_exp = st.selectbox(
             "Select Baseline Experiment",
             experiments,
-            key="baseline_exp"
+            key="baseline_exp_summary"
         )
     
     with col2:
         comparison_exp = st.selectbox(
             "Select Comparison Experiment",
             [exp for exp in experiments if exp != baseline_exp],
-            key="comparison_exp"
+            key="comparison_exp_summary"
         )
     
     if baseline_exp and comparison_exp:
@@ -597,17 +693,28 @@ def experiment_to_experiment_changes(analyzer, filters):
         st.markdown("---")
         
         # Add Top Performing Classes by Gap Logic
-        top_performing_classes_by_gap(analyzer, filters, selected_experiments)
+        top_performing_classes_by_gap(analyzer, filters, selected_experiments, analysis_mode)
         
         st.markdown("---")
         
         # Add Top/Worst Performing Classes by F1 Score
-        top_worst_performing_by_f1(analyzer, filters, selected_experiments)
+        top_worst_performing_by_f1(analyzer, filters, selected_experiments, analysis_mode)
 
 def summary_analysis_page(analyzer):
-    """Main summary analysis page"""
+    """Main summary analysis page with global analysis mode support"""
     # Create page-specific filters
     filters = create_summary_filters(analyzer, "📈 Summary & Comparison Analysis")
+    
+    # Get global analysis mode
+    analysis_mode = getattr(st.session_state, 'global_analysis_mode', 'All Data')
+    
+    # Show analysis mode info
+    if analysis_mode == "Detection":
+        st.info(f"**🔍 Detection Analysis**: Summary focused on detection performance (something vs nothing)")
+    elif analysis_mode == "Classification":
+        st.info(f"**🏷️ Classification Analysis**: Summary focused on classification performance among detected objects")
+    else:
+        st.info(f"**📊 All Data Analysis**: Complete summary including all detection and classification errors")
     
     if not analyzer.experiments:
         st.warning("Please upload experiment data first.")
@@ -622,18 +729,18 @@ def summary_analysis_page(analyzer):
     # Run analyses in order
     try:
         # 1. Most Problematic Classes (near headline as requested)
-        most_problematic_classes_analysis(analyzer, filters)
+        most_problematic_classes_analysis(analyzer, filters, analysis_mode)
         
         st.markdown("---")
         
         # 2. Performance Gap Analysis (without graph)
         if len(analyzer.experiments) >= 2:
-            gap_results = performance_gap_analysis(analyzer, filters)
+            gap_results = performance_gap_analysis(analyzer, filters, analysis_mode)
             
             st.markdown("---")
             
             # 3. Experiment-to-Experiment Changes (includes top performing and F1 analyses)
-            experiment_to_experiment_changes(analyzer, filters)
+            experiment_to_experiment_changes(analyzer, filters, analysis_mode)
         else:
             st.info("🔍 **Multiple Experiments Required**: Upload more experiments to see gap analysis and experiment comparisons.")
     

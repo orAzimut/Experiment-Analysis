@@ -417,11 +417,13 @@ class MultiExperimentAnalyzer:
         return filtered
     
     def calculate_metrics(self, experiment_ids: List[str] = None, 
-                         analysis_mode: str = "All Data",
                          filters: Dict = None) -> Dict:
-        """Calculate metrics for experiments with proper background filtering"""
+        """Calculate metrics for experiments with detection vs classification analysis"""
         if experiment_ids is None:
             experiment_ids = list(self.experiments.keys())
+        
+        # Get global analysis mode from session state
+        analysis_mode = getattr(st.session_state, 'global_analysis_mode', 'All Data')
         
         metrics = {}
         
@@ -439,27 +441,67 @@ class MultiExperimentAnalyzer:
                 continue
             
             # Apply analysis mode filtering
-            if analysis_mode == "Background Only":
-                # Only FP and FN with background
-                exp_data = exp_data[
+            if analysis_mode == "Detection":
+                # Detection analysis: something vs nothing (background)
+                # TP: Any successful detection
+                detection_tp = len(exp_data[exp_data['mistake_kind'] == 'TP'])
+                
+                # FP: Detected something where there was background
+                detection_fp = len(exp_data[
+                    (exp_data['mistake_kind'] == 'FP') & 
+                    (exp_data['class_mistake'] == 'background')
+                ])
+                
+                # FN: Missed something that was there
+                detection_fn = len(exp_data[
+                    (exp_data['mistake_kind'] == 'FN') & 
+                    (exp_data['class_mistake'] == 'background')
+                ])
+                
+                overall_tp = detection_tp
+                overall_fp = detection_fp
+                overall_fn = detection_fn
+                
+                # Filter data for per-class/platform analysis
+                filtered_exp_data = exp_data[
+                    (exp_data['mistake_kind'] == 'TP') |
                     ((exp_data['mistake_kind'] == 'FP') & (exp_data['class_mistake'] == 'background')) |
                     ((exp_data['mistake_kind'] == 'FN') & (exp_data['class_mistake'] == 'background'))
                 ]
-            elif analysis_mode == "Non-Background Only":
-                # Exclude any background-related mistakes
-                exp_data = exp_data[
-                    ~((exp_data['mistake_kind'].isin(['FP', 'FN'])) & (exp_data['class_mistake'] == 'background'))
+                
+            elif analysis_mode == "Classification":
+                # Classification analysis: among detected objects only (exclude background)
+                # TP: Correct classifications
+                classification_tp = len(exp_data[exp_data['mistake_kind'] == 'TP'])
+                
+                # FP: Wrong classifications (detected object A, but it was actually object B)
+                classification_fp = len(exp_data[
+                    (exp_data['mistake_kind'] == 'FP') & 
+                    (exp_data['class_mistake'] != 'background') &
+                    (exp_data['class_mistake'] != '-')
+                ])
+                
+                # FN: For classification, we use the same count as FP (mirror relationship)
+                classification_fn = classification_fp
+                
+                overall_tp = classification_tp
+                overall_fp = classification_fp
+                overall_fn = classification_fn
+                
+                # Filter data for per-class/platform analysis (exclude background cases)
+                filtered_exp_data = exp_data[
+                    (exp_data['mistake_kind'] == 'TP') |
+                    ((exp_data['mistake_kind'] == 'FP') & (exp_data['class_mistake'] != 'background') & (exp_data['class_mistake'] != '-'))
                 ]
-            # For "All Data", no additional filtering
+                
+            else:  # "All Data"
+                # Original logic - use all data
+                overall_tp = len(exp_data[exp_data['mistake_kind'] == 'TP'])
+                overall_fp = len(exp_data[exp_data['mistake_kind'] == 'FP'])
+                overall_fn = len(exp_data[exp_data['mistake_kind'] == 'FN'])
+                filtered_exp_data = exp_data
             
-            if len(exp_data) == 0:
-                continue
-            
-            # Calculate overall metrics from filtered data
-            overall_tp = len(exp_data[exp_data['mistake_kind'] == 'TP'])
-            overall_fp = len(exp_data[exp_data['mistake_kind'] == 'FP'])
-            overall_fn = len(exp_data[exp_data['mistake_kind'] == 'FN'])
-            
+            # Calculate metrics
             precision = overall_tp / (overall_tp + overall_fp) if (overall_tp + overall_fp) > 0 else 0
             recall = overall_tp / (overall_tp + overall_fn) if (overall_tp + overall_fn) > 0 else 0
             
@@ -470,7 +512,7 @@ class MultiExperimentAnalyzer:
                 'tp_count': overall_tp,
                 'fp_count': overall_fp,
                 'fn_count': overall_fn,
-                'filtered_data': exp_data  # Store for per-platform analysis
+                'filtered_data': filtered_exp_data  # Store for per-platform analysis
             }
         
         return metrics
@@ -478,6 +520,41 @@ class MultiExperimentAnalyzer:
 def create_experiment_manager():
     """Create the experiment management interface"""
     st.sidebar.header("🔬 Experiment Management")
+    
+    # GLOBAL ANALYSIS MODE SELECTOR AT TOP
+    st.sidebar.subheader("🎛️ Global Analysis Mode")
+    analysis_modes = {
+        "All Data": "Complete dataset analysis (all TP, FP, FN)",
+        "Detection": "Detection analysis: How good is the model at detecting something vs nothing?",
+        "Classification": "Classification analysis: How good is the model at classifying among detected objects?"
+    }
+    
+    global_mode = st.sidebar.selectbox(
+        "Select Analysis Mode",
+        list(analysis_modes.keys()),
+        help="This mode affects all analysis pages"
+    )
+    
+    # Store in session state
+    st.session_state.global_analysis_mode = global_mode
+    
+    # Show mode description
+    if global_mode == "Detection":
+        st.sidebar.info(f"**🔍 Detection Mode**: Measures how well the model detects *something* vs *nothing*")
+        st.sidebar.markdown("""
+        - **TP**: Any successful detection
+        - **FP**: False alarms (detected something where there was background)
+        - **FN**: Missed detections
+        """)
+    elif global_mode == "Classification":
+        st.sidebar.info(f"**🏷️ Classification Mode**: Measures classification accuracy among detected objects only")
+        st.sidebar.markdown("""
+        - **TP**: Correct classifications
+        - **FP**: Wrong classifications (detected A, but was actually B)
+        - **FN**: Mirror of FP (from other classes' perspective)
+        """)
+    else:
+        st.sidebar.info(f"**📊 All Data Mode**: Complete analysis including all detection and classification errors")
     
     # Check dependencies
     deps_ok = check_dependencies()
@@ -672,10 +749,57 @@ def create_confusion_matrix_filters(analyzer, page_name="Analysis"):
         'classes': sorted(all_data['cls_name'].unique())  # Use all classes
     }
 
+def filter_data_by_analysis_mode(data, analysis_mode, error_type):
+    """Filter FP or FN data based on analysis mode"""
+    
+    if analysis_mode == "Detection":
+        # Detection analysis: only background-related errors
+        if error_type == "FP":
+            return data[
+                (data['mistake_kind'] == 'FP') & 
+                (data['class_mistake'] == 'background')
+            ]
+        elif error_type == "FN":
+            return data[
+                (data['mistake_kind'] == 'FN') & 
+                (data['class_mistake'] == 'background')
+            ]
+    
+    elif analysis_mode == "Classification":
+        # Classification analysis: only non-background errors
+        if error_type == "FP":
+            return data[
+                (data['mistake_kind'] == 'FP') & 
+                (data['class_mistake'] != 'background') &
+                (data['class_mistake'] != '-')
+            ]
+        elif error_type == "FN":
+            # For classification FN, we return FP as the mirror
+            return data[
+                (data['mistake_kind'] == 'FP') & 
+                (data['class_mistake'] != 'background') &
+                (data['class_mistake'] != '-')
+            ]
+    
+    else:  # "All Data"
+        # Return all FP or FN data
+        if error_type == "FP":
+            return data[data['mistake_kind'] == 'FP']
+        elif error_type == "FN":
+            return data[data['mistake_kind'] == 'FN']
+    
+    return data
+
 def confusion_matrix_page(analyzer):
     """Create confusion matrix analysis page"""
     # Create page-specific filters (no experiments, no classes)
     filters = create_confusion_matrix_filters(analyzer, "🔄 Confusion Matrix Analysis")
+    
+    # Get global analysis mode
+    analysis_mode = getattr(st.session_state, 'global_analysis_mode', 'All Data')
+    
+    # Show analysis mode info
+    st.info(f"**Current Analysis Mode: {analysis_mode}** - Data filtered accordingly")
     
     if not analyzer.experiments:
         st.warning("Please upload experiment data first.")
@@ -728,7 +852,7 @@ def confusion_matrix_page(analyzer):
             x=cm_pivot.columns,
             y=cm_pivot.index,
             color_continuous_scale='Blues',
-            title=f'Confusion Matrix - {selected_exp} (Count & Percentage) - Filtered Data',
+            title=f'Confusion Matrix - {selected_exp} ({analysis_mode} Mode) - Filtered Data',
             text_auto=False
         )
         
@@ -759,7 +883,7 @@ def confusion_matrix_page(analyzer):
         st.subheader("📊 Class Distribution Analysis")
         
         if selected_class != 'All Classes':
-            st.info(f"🎯 **Showing confusion patterns for: {selected_class}** (Filtered Data)")
+            st.info(f"🎯 **Showing confusion patterns for: {selected_class}** ({analysis_mode} Mode)")
             
             # Filter data based on selected class
             # Row analysis: When actual class was selected_class, what was predicted?
@@ -819,7 +943,7 @@ def confusion_matrix_page(analyzer):
         
         else:
             # Show overall distributions when "All Classes" is selected
-            st.info("🎯 **Showing overall distributions for all classes** (Filtered Data)")
+            st.info(f"🎯 **Showing overall distributions for all classes** ({analysis_mode} Mode)")
             col1, col2 = st.columns(2)
             
             with col1:
@@ -898,7 +1022,7 @@ def confusion_matrix_page(analyzer):
                         fig_error_all = px.pie(
                             values=overall_error_dist.values,
                             names=overall_error_dist.index,
-                            title="Overall Error Type Distribution (Filtered Data)",
+                            title=f"Overall Error Type Distribution ({analysis_mode} Mode)",
                             color_discrete_map={'TP': 'green', 'FP': 'red', 'FN': 'orange'}
                         )
                         st.plotly_chart(fig_error_all, use_container_width=True)
@@ -932,7 +1056,7 @@ def confusion_matrix_page(analyzer):
                             y='Count',
                             color='Type',
                             barmode='group',  # This makes it clustered instead of stacked
-                            title="TP/FP/FN Distribution by Platform (Filtered)",
+                            title=f"TP/FP/FN Distribution by Platform ({analysis_mode} Mode)",
                             color_discrete_map={'TP': 'green', 'FP': 'red', 'FN': 'orange'}
                         )
                         
@@ -944,23 +1068,35 @@ def confusion_matrix_page(analyzer):
                     st.info("No TP/FP/FN data available")
 
 def overall_metrics_page(analyzer):
-    """Overall performance metrics page with different data subsets"""
+    """Overall performance metrics page with detection vs classification analysis"""
     # Create page-specific filters
     filters = create_page_filters(analyzer, "📊 Overall Performance Metrics")
+    
+    # Get global analysis mode
+    analysis_mode = getattr(st.session_state, 'global_analysis_mode', 'All Data')
+    
+    # Show analysis mode info
+    if analysis_mode == "Detection":
+        st.info(f"**🔍 Detection Analysis**: Measures how well the model detects *something* vs *nothing*")
+        st.markdown("""
+        - **TP**: Any successful detection (regardless of class)
+        - **FP**: Detected something where there was background (false alarms)
+        - **FN**: Missed something that was there (missed detections)
+        """)
+    elif analysis_mode == "Classification":
+        st.info(f"**🏷️ Classification Analysis**: Measures classification accuracy among detected objects only")
+        st.markdown("""
+        - **TP**: Correct classifications 
+        - **FP**: Wrong classifications (detected object A, but it was actually object B)
+        - **FN**: Equivalent to FP from other classes' perspective
+        - **Note**: In pure classification, precision ≈ recall since we only consider detected objects
+        """)
+    else:
+        st.info(f"**📊 All Data**: Complete dataset analysis including all detection and classification errors")
     
     if not analyzer.experiments:
         st.warning("Please upload experiment data first.")
         return
-    
-    # Three analysis modes with corrected descriptions
-    analysis_modes = {
-        "All Data": "Analyze complete dataset",
-        "Background Only": "Analyze only FP and FN with background class",
-        "Non-Background Only": "Exclude all background-related FP and FN"
-    }
-    
-    selected_mode = st.selectbox("Select Analysis Mode", list(analysis_modes.keys()))
-    st.info(f"**{selected_mode}**: {analysis_modes[selected_mode]} - Using Filtered Data")
     
     # Calculate metrics for all experiments with applied filters
     experiment_ids = filters.get('experiments', [])
@@ -969,10 +1105,9 @@ def overall_metrics_page(analyzer):
         st.warning("No experiments selected.")
         return
     
-    # Use the updated calculate_metrics method with filters
+    # Use the calculate_metrics method (now uses global mode)
     metrics = analyzer.calculate_metrics(
         experiment_ids=experiment_ids,
-        analysis_mode=selected_mode,
         filters=filters
     )
     
@@ -999,14 +1134,18 @@ def overall_metrics_page(analyzer):
                         f"📍 {exp_id}",
                         f"F1: {exp_metrics['f1']:.3f}"
                     )
-                    st.metric(
-                        "Precision",
-                        f"{exp_metrics['precision']:.3f}"
-                    )
-                    st.metric(
-                        "Recall",
-                        f"{exp_metrics['recall']:.3f}"
-                    )
+                    
+                    # Show precision/recall with context
+                    if analysis_mode == "Detection":
+                        st.metric("Detection Precision", f"{exp_metrics['precision']:.3f}")
+                        st.metric("Detection Recall", f"{exp_metrics['recall']:.3f}")
+                    elif analysis_mode == "Classification":
+                        st.metric("Classification Accuracy", f"{exp_metrics['precision']:.3f}")
+                        st.metric("Classification Recall", f"{exp_metrics['recall']:.3f}")
+                    else:
+                        st.metric("Precision", f"{exp_metrics['precision']:.3f}")
+                        st.metric("Recall", f"{exp_metrics['recall']:.3f}")
+                    
                     st.metric(
                         "Counts",
                         f"TP:{exp_metrics['tp_count']} FP:{exp_metrics['fp_count']} FN:{exp_metrics['fn_count']}"
@@ -1031,7 +1170,7 @@ def overall_metrics_page(analyzer):
         y='Score',
         color='Experiment',
         barmode='group',
-        title=f'Performance Comparison - {selected_mode} (Filtered Data)',
+        title=f'{analysis_mode} Performance Comparison (Filtered Data)',
         labels={'Metric': 'Performance Metrics', 'Score': 'Score Value', 'Experiment': 'Experiments'}
     )
     
@@ -1045,45 +1184,90 @@ def overall_metrics_page(analyzer):
     
     st.plotly_chart(fig, use_container_width=True)
     
-    # Per-class F1 Score breakdown
-    st.subheader("📋 Per-Class F1 Score")
+    # UPDATED: Separate Precision and Recall charts instead of F1 Score
+    st.subheader("📋 Per-Class Precision & Recall")
     
-    # Calculate F1 scores per class using the filtered data from metrics
-    class_f1_data = []
+    # Calculate precision and recall scores per class using the filtered data from metrics
+    class_precision_data = []
+    class_recall_data = []
+    
     for exp_id, exp_metrics in metrics.items():
         filtered_data = exp_metrics['filtered_data']
         
-        # Calculate F1 per class
+        # Calculate precision and recall per class
         for class_name in filtered_data['cls_name'].unique():
             class_data = filtered_data[filtered_data['cls_name'] == class_name]
             
-            tp = len(class_data[class_data['mistake_kind'] == 'TP'])
-            fp = len(class_data[class_data['mistake_kind'] == 'FP'])
-            fn = len(class_data[class_data['mistake_kind'] == 'FN'])
+            if analysis_mode == "Detection":
+                # For detection, all TPs are good regardless of class
+                tp = len(class_data[class_data['mistake_kind'] == 'TP'])
+                fp = len(class_data[
+                    (class_data['mistake_kind'] == 'FP') & 
+                    (class_data['class_mistake'] == 'background')
+                ])
+                fn = len(class_data[
+                    (class_data['mistake_kind'] == 'FN') & 
+                    (class_data['class_mistake'] == 'background')
+                ])
+            elif analysis_mode == "Classification":
+                # For classification, only consider non-background cases
+                tp = len(class_data[class_data['mistake_kind'] == 'TP'])
+                fp = len(class_data[
+                    (class_data['mistake_kind'] == 'FP') & 
+                    (class_data['class_mistake'] != 'background') &
+                    (class_data['class_mistake'] != '-')
+                ])
+                fn = fp  # In classification, FN = FP from other classes' perspective
+            else:
+                # All data
+                tp = len(class_data[class_data['mistake_kind'] == 'TP'])
+                fp = len(class_data[class_data['mistake_kind'] == 'FP'])
+                fn = len(class_data[class_data['mistake_kind'] == 'FN'])
             
             precision = tp / (tp + fp) if (tp + fp) > 0 else 0
             recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
             
-            class_f1_data.append({
+            class_precision_data.append({
                 'Experiment': exp_id,
                 'Class': class_name,
-                'F1': f1
+                'Precision': precision
+            })
+            
+            class_recall_data.append({
+                'Experiment': exp_id,
+                'Class': class_name,
+                'Recall': recall
             })
     
-    if class_f1_data:
-        class_f1_df = pd.DataFrame(class_f1_data)
+    # Create side-by-side precision and recall charts
+    if class_precision_data and class_recall_data:
+        col1, col2 = st.columns(2)
         
-        fig_class = px.bar(
-            class_f1_df,
-            x='Class',
-            y='F1',
-            color='Experiment',
-            barmode='group',
-            title=f'F1 Score by Class - {selected_mode} (Filtered Data)'
-        )
+        with col1:
+            class_precision_df = pd.DataFrame(class_precision_data)
+            fig_precision = px.bar(
+                class_precision_df,
+                x='Class',
+                y='Precision',
+                color='Experiment',
+                barmode='group',
+                title=f'{analysis_mode} Precision by Class (Filtered Data)'
+            )
+            fig_precision.update_xaxes(tickangle=45)
+            st.plotly_chart(fig_precision, use_container_width=True)
         
-        st.plotly_chart(fig_class, use_container_width=True)
+        with col2:
+            class_recall_df = pd.DataFrame(class_recall_data)
+            fig_recall = px.bar(
+                class_recall_df,
+                x='Class',
+                y='Recall',
+                color='Experiment',
+                barmode='group',
+                title=f'{analysis_mode} Recall by Class (Filtered Data)'
+            )
+            fig_recall.update_xaxes(tickangle=45)
+            st.plotly_chart(fig_recall, use_container_width=True)
     
     # Per-Platform F1 Score breakdown
     st.subheader("🎥 Per-Platform F1 Score")
@@ -1097,9 +1281,28 @@ def overall_metrics_page(analyzer):
         for platform_name in filtered_data['platform'].unique():
             platform_data = filtered_data[filtered_data['platform'] == platform_name]
             
-            tp = len(platform_data[platform_data['mistake_kind'] == 'TP'])
-            fp = len(platform_data[platform_data['mistake_kind'] == 'FP'])
-            fn = len(platform_data[platform_data['mistake_kind'] == 'FN'])
+            if analysis_mode == "Detection":
+                tp = len(platform_data[platform_data['mistake_kind'] == 'TP'])
+                fp = len(platform_data[
+                    (platform_data['mistake_kind'] == 'FP') & 
+                    (platform_data['class_mistake'] == 'background')
+                ])
+                fn = len(platform_data[
+                    (platform_data['mistake_kind'] == 'FN') & 
+                    (platform_data['class_mistake'] == 'background')
+                ])
+            elif analysis_mode == "Classification":
+                tp = len(platform_data[platform_data['mistake_kind'] == 'TP'])
+                fp = len(platform_data[
+                    (platform_data['mistake_kind'] == 'FP') & 
+                    (platform_data['class_mistake'] != 'background') &
+                    (platform_data['class_mistake'] != '-')
+                ])
+                fn = fp  # In classification, FN = FP from other classes' perspective
+            else:
+                tp = len(platform_data[platform_data['mistake_kind'] == 'TP'])
+                fp = len(platform_data[platform_data['mistake_kind'] == 'FP'])
+                fn = len(platform_data[platform_data['mistake_kind'] == 'FN'])
             
             precision = tp / (tp + fp) if (tp + fp) > 0 else 0
             recall = tp / (tp + fn) if (tp + fn) > 0 else 0
@@ -1123,7 +1326,7 @@ def overall_metrics_page(analyzer):
             y='F1',
             color='Experiment',
             barmode='group',
-            title=f'F1 Score by Platform - {selected_mode} (Filtered Data)'
+            title=f'{analysis_mode} F1 Score by Platform (Filtered Data)'
         )
         
         st.plotly_chart(fig_platform, use_container_width=True)
@@ -1133,9 +1336,20 @@ def overall_metrics_page(analyzer):
             st.dataframe(platform_f1_df.round(3), use_container_width=True)
 
 def fp_analysis_page(analyzer):
-    """Detailed False Positive analysis page"""
+    """Detailed False Positive analysis page with global analysis mode"""
     # Create page-specific filters
     filters = create_page_filters(analyzer, "🔴 False Positive Analysis")
+    
+    # Get global analysis mode
+    analysis_mode = getattr(st.session_state, 'global_analysis_mode', 'All Data')
+    
+    # Show analysis mode info
+    if analysis_mode == "Detection":
+        st.info(f"**🔍 Detection FP Analysis**: False alarms (detected something where there was background)")
+    elif analysis_mode == "Classification":
+        st.info(f"**🏷️ Classification FP Analysis**: Wrong classifications (detected object A, but it was actually object B)")
+    else:
+        st.info(f"**📊 All Data FP Analysis**: All false positive errors")
     
     if not analyzer.experiments:
         st.warning("Please upload experiment data first.")
@@ -1153,8 +1367,8 @@ def fp_analysis_page(analyzer):
             # Apply filters to the entire dataset first
             filtered_exp_data = analyzer._apply_filters(exp_data, filters)
             
-            # Get FP data from filtered dataset
-            fp_data = filtered_exp_data[filtered_exp_data['mistake_kind'] == 'FP'].copy()
+            # Apply analysis mode filtering to FP data
+            fp_data = filter_data_by_analysis_mode(filtered_exp_data, analysis_mode, "FP")
             fp_data['experiment_id'] = exp_id
             all_fp_data.append(fp_data)
             
@@ -1168,7 +1382,7 @@ def fp_analysis_page(analyzer):
             all_filtered_data.append(filtered_exp_data)
     
     if not all_fp_data or all(len(fp) == 0 for fp in all_fp_data):
-        st.warning("No False Positive data available for selected filters.")
+        st.warning(f"No False Positive data available for selected filters in {analysis_mode} mode.")
         return
     
     combined_fp = pd.concat([fp for fp in all_fp_data if len(fp) > 0], ignore_index=True)
@@ -1176,7 +1390,7 @@ def fp_analysis_page(analyzer):
     combined_gt = pd.concat([gt for gt in all_gt_data if len(gt) > 0], ignore_index=True) if any(len(gt) > 0 for gt in all_gt_data) else pd.DataFrame()
     
     if combined_fp.empty:
-        st.warning("No False Positive data matches the selected filters.")
+        st.warning(f"No False Positive data matches the selected filters in {analysis_mode} mode.")
         return
     
     # FP Rate and Precision Cards (side by side)
@@ -1199,7 +1413,7 @@ def fp_analysis_page(analyzer):
                 
                 if len(exp_filtered) > 0:
                     exp_tp = len(exp_filtered[exp_filtered['mistake_kind'] == 'TP'])
-                    exp_fp = len(exp_filtered[exp_filtered['mistake_kind'] == 'FP'])
+                    exp_fp = len(combined_fp[combined_fp['experiment_id'] == exp_id])
                     exp_total_pred = len(exp_filtered[exp_filtered['ground_truth'] == 0])
                     
                     fp_rate = exp_fp / exp_total_pred if exp_total_pred > 0 else 0
@@ -1275,7 +1489,7 @@ def fp_analysis_page(analyzer):
                     secondary_y=True
                 )
         
-        fig.update_layout(title="FP Share vs Class Share (Prior Probability) - Filtered Data")
+        fig.update_layout(title=f"FP Share vs Class Share ({analysis_mode} Mode) - Filtered Data")
         fig.update_xaxes(title_text="Ship Class")
         fig.update_yaxes(title_text="FP Share (%)", secondary_y=False)
         fig.update_yaxes(title_text="Class Share - Prior Probability (%)", secondary_y=True)
@@ -1284,8 +1498,8 @@ def fp_analysis_page(analyzer):
         
         # Add explanation
         with st.expander("📚 Understanding FP Share vs Class Share"):
-            st.markdown("""
-            **🎯 What this chart shows:**
+            st.markdown(f"""
+            **🎯 What this chart shows ({analysis_mode} mode):**
             
             - **FP Share (Bars)**: What percentage of total False Positives does each class represent?
             - **Class Share (Line)**: What percentage of ground truth does each class represent? (Prior Probability)
@@ -1300,7 +1514,6 @@ def fp_analysis_page(analyzer):
             - If "Bulk" ships are 40% of ground truth but 60% of false positives → Model struggles with Bulk ships
             - If "Tanker" ships are 30% of ground truth but 10% of false positives → Model performs well on Tankers
             """)
-    
     
     # Train Share (if available)
     if analyzer.train_data is not None and not analyzer.train_data.empty:
@@ -1325,7 +1538,7 @@ def fp_analysis_page(analyzer):
             st.warning("No training class distribution available")
     
     # FP Distribution - Separate by Experiment
-    st.subheader("📊 FP Distribution by Experiment")
+    st.subheader(f"📊 FP Distribution by Experiment ({analysis_mode} Mode)")
     
     # Create columns for side-by-side experiment comparison
     if len(experiment_ids) > 1:
@@ -1363,14 +1576,14 @@ def fp_analysis_page(analyzer):
             fig_dist = px.bar(
                 x=fp_dist.index,
                 y=fp_dist.values,
-                title=f"FP Distribution - {exp_id} (Filtered Data)",
+                title=f"FP Distribution - {exp_id} ({analysis_mode} Mode)",
                 labels={'x': 'Ship Class', 'y': 'FP Count'}
             )
             fig_dist.update_xaxes(tickangle=45)
             st.plotly_chart(fig_dist, use_container_width=True)
     
     # FP Area Distribution - Separate by Experiment (FIXED WITH CHRONOLOGICAL ORDER)
-    st.subheader("📐 FP Area Distribution by Experiment")
+    st.subheader(f"📐 FP Area Distribution by Experiment ({analysis_mode} Mode)")
     
     if 'area_category' in combined_fp.columns:
         # Get the chronological order for area categories
@@ -1409,7 +1622,7 @@ def fp_analysis_page(analyzer):
                 fig_area = px.histogram(
                     exp_fp_data,
                     x='area_category',
-                    title=f"FP Area Distribution - {exp_id} (Filtered Data)",
+                    title=f"FP Area Distribution - {exp_id} ({analysis_mode} Mode)",
                     labels={'area_category': 'Area Category', 'count': 'FP Count'}
                 )
                 fig_area.update_xaxes(
@@ -1420,7 +1633,7 @@ def fp_analysis_page(analyzer):
                 st.plotly_chart(fig_area, use_container_width=True)
     
     # FP Heatmap - Separate by Experiment
-    st.subheader("🔥 FP Heatmap (Platform vs Class) by Experiment")
+    st.subheader(f"🔥 FP Heatmap (Platform vs Class) by Experiment ({analysis_mode} Mode)")
     
     if len(combined_fp) > 0:
         if len(experiment_ids) > 1:
@@ -1475,15 +1688,26 @@ def fp_analysis_page(analyzer):
                         x=fp_heatmap_data.columns,
                         y=fp_heatmap_data.index,
                         color_continuous_scale='Reds',
-                        title=f"FP Heatmap - {exp_id} (Filtered Data)",
+                        title=f"FP Heatmap - {exp_id} ({analysis_mode} Mode)",
                         text_auto=True
                     )
                     st.plotly_chart(fig_heatmap, use_container_width=True)
 
 def fn_analysis_page(analyzer):
-    """Detailed False Negative analysis page (similar to FP but for FN)"""
+    """Detailed False Negative analysis page with global analysis mode"""
     # Create page-specific filters
     filters = create_page_filters(analyzer, "🔵 False Negative Analysis")
+    
+    # Get global analysis mode
+    analysis_mode = getattr(st.session_state, 'global_analysis_mode', 'All Data')
+    
+    # Show analysis mode info
+    if analysis_mode == "Detection":
+        st.info(f"**🔍 Detection FN Analysis**: Missed detections (should have detected something, but didn't)")
+    elif analysis_mode == "Classification":
+        st.info(f"**🏷️ Classification FN Analysis**: Mirror of classification FP (equivalent errors from other classes' perspective)")
+    else:
+        st.info(f"**📊 All Data FN Analysis**: All false negative errors")
     
     if not analyzer.experiments:
         st.warning("Please upload experiment data first.")
@@ -1501,8 +1725,8 @@ def fn_analysis_page(analyzer):
             # Apply filters to the entire dataset first
             filtered_exp_data = analyzer._apply_filters(exp_data, filters)
             
-            # Get FN data from filtered dataset
-            fn_data = filtered_exp_data[filtered_exp_data['mistake_kind'] == 'FN'].copy()
+            # Apply analysis mode filtering to FN data
+            fn_data = filter_data_by_analysis_mode(filtered_exp_data, analysis_mode, "FN")
             fn_data['experiment_id'] = exp_id
             all_fn_data.append(fn_data)
             
@@ -1516,7 +1740,7 @@ def fn_analysis_page(analyzer):
             all_filtered_data.append(filtered_exp_data)
     
     if not all_fn_data or all(len(fn) == 0 for fn in all_fn_data):
-        st.warning("No False Negative data available for selected filters.")
+        st.warning(f"No False Negative data available for selected filters in {analysis_mode} mode.")
         return
     
     combined_fn = pd.concat([fn for fn in all_fn_data if len(fn) > 0], ignore_index=True)
@@ -1524,7 +1748,7 @@ def fn_analysis_page(analyzer):
     combined_gt = pd.concat([gt for gt in all_gt_data if len(gt) > 0], ignore_index=True) if any(len(gt) > 0 for gt in all_gt_data) else pd.DataFrame()
     
     if combined_fn.empty:
-        st.warning("No False Negative data matches the selected filters.")
+        st.warning(f"No False Negative data matches the selected filters in {analysis_mode} mode.")
         return
     
     # FN Rate and Recall Cards (side by side)
@@ -1547,7 +1771,7 @@ def fn_analysis_page(analyzer):
                 
                 if len(exp_filtered) > 0:
                     exp_tp = len(exp_filtered[exp_filtered['mistake_kind'] == 'TP'])
-                    exp_fn = len(exp_filtered[exp_filtered['mistake_kind'] == 'FN'])
+                    exp_fn = len(combined_fn[combined_fn['experiment_id'] == exp_id])
                     
                     fn_rate = exp_fn / (exp_fn + exp_tp) if (exp_fn + exp_tp) > 0 else 0
                     recall = exp_tp / (exp_tp + exp_fn) if (exp_tp + exp_fn) > 0 else 0
@@ -1622,7 +1846,7 @@ def fn_analysis_page(analyzer):
                     secondary_y=True
                 )
         
-        fig.update_layout(title="FN Share vs Class Share (Prior Probability) - Filtered Data")
+        fig.update_layout(title=f"FN Share vs Class Share ({analysis_mode} Mode) - Filtered Data")
         fig.update_xaxes(title_text="Ship Class")
         fig.update_yaxes(title_text="FN Share (%)", secondary_y=False)
         fig.update_yaxes(title_text="Class Share - Prior Probability (%)", secondary_y=True)
@@ -1631,8 +1855,8 @@ def fn_analysis_page(analyzer):
         
         # Add explanation
         with st.expander("📚 Understanding FN Share vs Class Share"):
-            st.markdown("""
-            **🎯 What this chart shows:**
+            st.markdown(f"""
+            **🎯 What this chart shows ({analysis_mode} mode):**
             
             - **FN Share (Bars)**: What percentage of total False Negatives does each class represent?
             - **Class Share (Line)**: What percentage of ground truth does each class represent? (Prior Probability)
@@ -1671,7 +1895,7 @@ def fn_analysis_page(analyzer):
             st.warning("No training class distribution available")
     
     # FN Distribution - Separate by Experiment
-    st.subheader("📊 FN Distribution by Experiment")
+    st.subheader(f"📊 FN Distribution by Experiment ({analysis_mode} Mode)")
     
     # Create columns for side-by-side experiment comparison
     if len(experiment_ids) > 1:
@@ -1709,14 +1933,14 @@ def fn_analysis_page(analyzer):
             fig_dist = px.bar(
                 x=fn_dist.index,
                 y=fn_dist.values,
-                title=f"FN Distribution - {exp_id} (Filtered Data)",
+                title=f"FN Distribution - {exp_id} ({analysis_mode} Mode)",
                 labels={'x': 'Ship Class', 'y': 'FN Count'}
             )
             fig_dist.update_xaxes(tickangle=45)
             st.plotly_chart(fig_dist, use_container_width=True)
     
     # FN Area Distribution - Separate by Experiment (FIXED WITH CHRONOLOGICAL ORDER)
-    st.subheader("📐 FN Area Distribution by Experiment")
+    st.subheader(f"📐 FN Area Distribution by Experiment ({analysis_mode} Mode)")
     
     if 'area_category' in combined_fn.columns:
         # Get the chronological order for area categories
@@ -1755,7 +1979,7 @@ def fn_analysis_page(analyzer):
                 fig_area = px.histogram(
                     exp_fn_data,
                     x='area_category',
-                    title=f"FN Area Distribution - {exp_id} (Filtered Data)",
+                    title=f"FN Area Distribution - {exp_id} ({analysis_mode} Mode)",
                     labels={'area_category': 'Area Category', 'count': 'FN Count'}
                 )
                 fig_area.update_xaxes(
@@ -1766,7 +1990,7 @@ def fn_analysis_page(analyzer):
                 st.plotly_chart(fig_area, use_container_width=True)
     
     # FN Heatmap - Separate by Experiment
-    st.subheader("🔥 FN Heatmap (Platform vs Class) by Experiment")
+    st.subheader(f"🔥 FN Heatmap (Platform vs Class) by Experiment ({analysis_mode} Mode)")
     
     if len(combined_fn) > 0:
         if len(experiment_ids) > 1:
@@ -1821,7 +2045,7 @@ def fn_analysis_page(analyzer):
                         x=fn_heatmap_data.columns,
                         y=fn_heatmap_data.index,
                         color_continuous_scale='Blues',
-                        title=f"FN Heatmap - {exp_id} (Filtered Data)",
+                        title=f"FN Heatmap - {exp_id} ({analysis_mode} Mode)",
                         text_auto=True
                     )
                     st.plotly_chart(fig_heatmap, use_container_width=True)
@@ -1835,7 +2059,7 @@ def main():
     )
     
     st.title("🚢 Advanced Ship Detection Analysis Dashboard")
-    st.markdown("**Multi-Experiment Analysis with Interactive Filtering & Precision/Recall/F1 Metrics**")
+    st.markdown("**Multi-Experiment Analysis with Detection vs Classification Modes**")
     
     # Create experiment manager
     analyzer = create_experiment_manager()
@@ -1896,94 +2120,98 @@ def main():
             3. Give each experiment a meaningful name
             4. Click **"Add [Experiment Name]"** for each file
             
-            ### **Step 3: Analyze** 📊
+            ### **Step 3: Choose Analysis Mode** 🎛️
+            - **Detection Mode**: How good is the model at detecting *something* vs *nothing*?
+            - **Classification Mode**: How good is the model at classifying correctly among detected objects?
+            - **All Data Mode**: Complete analysis including all errors
+            
+            ### **Step 4: Analyze & Compare** 📊
             - Use the tabs to explore different analyses
-            - **NEW**: Start with the **Summary & Comparison** tab for overview analysis
             - Use the filters at the top of each page to focus on specific data
-            - Click on charts for interactive drill-down
-            
-            ### **Step 4: Compare** 🔄
-            - Select multiple experiments in page filters
-            - Choose a "Main Experiment" for baseline comparison
-            - View side-by-side metrics and visualizations
-            - **NEW**: Use delta charts to see exact changes between experiments
+            - Compare experiments side-by-side
+            - View detailed breakdowns by class and platform
             
             ---
             
-            ## 📊 **New Summary Features**
+            ## 🔍 **Analysis Modes Explained**
             
-            ### **Performance Gap Analysis** 📈
-            - Compare best vs worst performing experiments
-            - See percentage differences in key metrics
-            - Identify which experiments need improvement
+            ### **Detection Analysis** 🎯
+            **Question**: Can the model detect that there's *something* vs *nothing*?
             
-            ### **Best/Worst Classes** 🎯
-            - Find strongest and weakest classes per experiment
-            - See which classes need attention
-            - Compare class performance across experiments
+            - **TP (True Positive)**: Successfully detected something (regardless of what class)
+            - **FP (False Positive)**: Detected something where there was background (false alarm)
+            - **FN (False Negative)**: Missed something that was actually there
             
-            ### **Class Improvement Analysis** 📊
-            - Track which classes improved between experiments
-            - Identify classes that degraded
-            - See improvement percentages and trends
+            **Use Case**: Evaluate detection sensitivity and false alarm rates
             
-            ### **Delta/Improvement Charts** 🔄
-            - Visualize exact changes between experiments
-            - Compare any two experiments directly
-            - See per-class performance changes
-            - Interactive experiment selection for comparison
+            ### **Classification Analysis** 🏷️
+            **Question**: Given that something was detected, can the model classify it correctly?
+            
+            - **TP (True Positive)**: Correctly classified the detected object
+            - **FP (False Positive)**: Detected object A but it was actually object B
+            - **FN (False Negative)**: Equivalent to FP from other classes' perspective
+            
+            **Use Case**: Evaluate classification accuracy among detected objects
+            **Note**: In pure classification, precision ≈ recall since we only consider detected objects
+            
+            ### **All Data Analysis** 📋
+            **Question**: Overall model performance including all types of errors
+            
+            - Includes all TP, FP, and FN from both detection and classification
+            - Comprehensive view of model performance
             
             ---
             
-            ## 📋 **Data Format Example**
+            ## 📊 **Understanding the Metrics**
             
-            Your Excel/CSV should look like this:
-            """)
+            ### **Overall Metrics Page** 📈
+            - **Detection Mode**: Shows detection precision, recall, and F1-score
+            - **Classification Mode**: Shows classification accuracy among detected objects
+            - **All Data Mode**: Shows overall model performance
+            - Per-class precision and recall breakdowns available
+            - Per-platform F1 score analysis
             
-            # Show a sample data format
-            sample_data = pd.DataFrame({
-                'bb_id': [1, 2, 3, 4, 5],
-                'frame': [1, 1, 2, 2, 3],
-                'cls_name': ['Bulk', 'Merchant', 'Bulk', 'Tanker', 'Merchant'],
-                'mistake_kind': ['TP', 'FP', 'TP', 'FN', 'TP'],
-                'platform': ['Platform_A', 'Platform_A', 'Platform_B', 'Platform_B', 'Platform_A'],
-                'bb_size': ['large', 'medium', 'large', 'small', 'medium'],
-                'area_px': [15000, 8500, 16000, 2500, 7800],
-                'ground_truth': [0, 0, 0, 1, 0],
-                'class_mistake': ['-', 'Bulk', '-', '-', '-']
-            })
-            
-            st.dataframe(sample_data, use_container_width=True)
-            
-            st.markdown("""
-            ## 🎛️ **Understanding the Analysis**
-            
-            ### **Summary & Comparison Page** 📈 **(NEW!)**
-            - **Performance Gap Analysis**: See % differences between best/worst experiments
-            - **Best/Worst Classes**: Identify top and bottom performing classes
-            - **Class Improvement**: Track which classes improved between experiments
-            - **Delta Charts**: Compare any two experiments with interactive selection
-            - **Improvement Tracking**: See exact F1-Score changes per class
+            ### **False Positive/Negative Pages** 🔴🔵
+            - **Detection Mode**: Focus on detection-related errors only
+            - **Classification Mode**: Focus on classification-related errors only
+            - **All Data Mode**: All error types included
+            - Share analysis: Compare error distribution vs expected distribution
             
             ### **Confusion Matrix Page** 🔄
             - Interactive confusion matrix with click-to-drill
-            - Shows prediction vs actual classifications
-            - Per-page filtering with collapsible controls
+            - Shows actual vs predicted classifications
+            - Class-by-class confusion analysis
             
-            ### **Overall Metrics Page** 📊
-            - **Background Only**: Analyzes only FP and FN with background class
-            - **Non-Background Only**: Excludes all background-related FP and FN
-            - **All Data**: Complete dataset analysis
-            - Precision, Recall, and F1-Score metrics
-            - Per-class and per-platform F1 Score analysis
+            ---
             
-            ### **False Positive/Negative Pages** 🔴🔵
-            - Deep-dive error analysis
-            - Rate calculations and distributions
-            - Platform and class-wise breakdowns
-            - Interactive heatmaps and visualizations
-            - FP/FN Share vs Class Share analysis
-            - Side-by-side experiment comparisons
+            ## 🎛️ **Understanding the Analysis**
+            
+            ### **When to Use Each Mode:**
+            
+            **Detection Mode** 🎯:
+            - When you want to tune detection thresholds
+            - When false alarms are a major concern
+            - When you need to understand missed detections
+            
+            **Classification Mode** 🏷️:
+            - When you want to improve class confusion
+            - When detection is working well but classification needs improvement
+            - When you want to understand inter-class confusion patterns
+            
+            **All Data Mode** 📋:
+            - When you want a complete overview
+            - When comparing different model versions
+            - When presenting overall model performance
+            
+            ## 🔧 **Data Structure Requirements**
+            
+            Your data should have these key columns:
+            - `mistake_kind`: 'TP', 'FP', 'FN', or '-'
+            - `class_mistake`: 
+              - '-' for correct detections
+              - 'background' for detection errors (something vs nothing)
+              - Actual class name for classification errors (wrong class)
+            - `ground_truth`: 0 for predictions, 1 for ground truth
             
             ## 🔧 **Troubleshooting**
             
@@ -1992,17 +2220,10 @@ def main():
             pip install openpyxl xlrd
             ```
             
-            **"Cannot setitem on Categorical" Error:**
-            - This is now fixed! Try uploading again.
-            
-            **"Missing required columns" Error:**
-            - Check your file has: bb_id, frame, cls_name, mistake_kind
-            - Column names must match exactly (case-sensitive)
-            
-            **File Won't Load:**
-            - Try saving Excel as CSV UTF-8 format
-            - Check for empty rows/columns
-            - Ensure data is properly formatted
+            **"No data available" Error:**
+            - Check your analysis mode selection
+            - Verify your data has the required mistake_kind and class_mistake columns
+            - Try "All Data" mode first to see if data is loading correctly
             """)
         
         # Installation requirements
@@ -2052,34 +2273,32 @@ def main():
             **✨ Key Features:**
             
             1. **Multi-Experiment Support**: Upload and compare multiple experiments
-            2. **NEW: Summary & Comparison Analysis**: Comprehensive experiment comparison
-            3. **NEW: Performance Gap Analysis**: See % differences between experiments
-            4. **NEW: Class Improvement Tracking**: Track class performance changes
-            5. **NEW: Delta Charts**: Interactive experiment-to-experiment comparison
-            6. **Interactive Confusion Matrix**: Click and drill-down analysis
-            7. **Per-Page Filtering**: Individual filters on each analysis page
-            8. **Precision/Recall/F1 Metrics**: Core performance metrics with filtering support
-            9. **Advanced Filtering**: Platform, size, class filters with "All" options
-            10. **FP/FN Deep Dive**: Comprehensive error analysis
-            11. **Share Analysis**: FP/FN Share vs Class Share (Prior Probability)
-            12. **Training Data Integration**: Compare test vs train distributions
-            13. **NEW**: Per-Platform F1 Score Analysis
+            2. **Global Analysis Modes**: Detection, Classification, or All Data modes
+            3. **Detection vs Classification Analysis**: Understand different types of errors
+            4. **Interactive Confusion Matrix**: Click and drill-down analysis
+            5. **Per-Page Filtering**: Individual filters on each analysis page
+            6. **Precision/Recall Analysis**: Separate precision and recall visualizations
+            7. **Advanced Filtering**: Platform, size, class filters with "All" options
+            8. **FP/FN Deep Dive**: Comprehensive error analysis with mode-specific filtering
+            9. **Share Analysis**: FP/FN Share vs Class Share (Prior Probability)
+            10. **Training Data Integration**: Compare test vs train distributions
+            11. **Per-Platform F1 Score Analysis**: Platform-specific performance metrics
+            12. **Summary & Comparison Analysis**: Comprehensive experiment comparison
             
             **📊 Metrics Calculated:**
-            - Precision, Recall, F1-Score
-            - Per-class and per-platform F1 scores
-            - Overall metrics with different background filtering modes
+            - Precision, Recall, F1-Score (mode-specific)
+            - Per-class precision and recall scores
+            - Per-platform F1 scores
+            - Detection vs classification specific metrics
             - Error rate analysis
             - Prior probability comparisons
-            - **NEW**: Performance gaps and improvement percentages
-            - **NEW**: Best/worst class identification
-            - **NEW**: Delta calculations between experiments
+            - Performance gaps and improvement percentages
             
-            **🎛️ Filtering System:**
-            - **Per-Page Filters**: Each analysis page has its own filter controls
-            - **Collapsible Interface**: Filters are in expandable sections to save space
-            - **"All" Options**: Easy selection of all categories in each filter
-            - **Real-Time Updates**: All visualizations update instantly with filter changes
+            **🎛️ Global Analysis System:**
+            - **Left Sidebar Mode Selection**: Choose analysis mode that affects all pages
+            - **Mode-Specific Filtering**: All visualizations adapt to selected mode
+            - **Consistent Analysis**: Same mode applies across all tabs
+            - **Real-Time Updates**: All visualizations update instantly with mode changes
             """)
 
 if __name__ == "__main__":
