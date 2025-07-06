@@ -1498,35 +1498,35 @@ def overall_metrics_page(analyzer):
                 'Recall': recall
             })
     
-    # Create side-by-side precision and recall charts
+    # Create vertically stacked precision and recall charts for better readability
     if class_precision_data and class_recall_data:
-        col1, col2 = st.columns(2)
+        # Precision chart (full width)
+        class_precision_df = pd.DataFrame(class_precision_data)
+        fig_precision = px.bar(
+            class_precision_df,
+            x='Class',
+            y='Precision',
+            color='Experiment',
+            barmode='group',
+            title=f'{analysis_mode} Precision by {class_level} - Filtered Data'
+        )
+        fig_precision.update_xaxes(tickangle=45)
+        fig_precision.update_layout(height=500)  # Make it taller for better visibility
+        st.plotly_chart(fig_precision, use_container_width=True)
         
-        with col1:
-            class_precision_df = pd.DataFrame(class_precision_data)
-            fig_precision = px.bar(
-                class_precision_df,
-                x='Class',
-                y='Precision',
-                color='Experiment',
-                barmode='group',
-                title=f'{analysis_mode} Precision by {class_level} - Filtered Data'
-            )
-            fig_precision.update_xaxes(tickangle=45)
-            st.plotly_chart(fig_precision, use_container_width=True)
-        
-        with col2:
-            class_recall_df = pd.DataFrame(class_recall_data)
-            fig_recall = px.bar(
-                class_recall_df,
-                x='Class',
-                y='Recall',
-                color='Experiment',
-                barmode='group',
-                title=f'{analysis_mode} Recall by {class_level} - Filtered Data'
-            )
-            fig_recall.update_xaxes(tickangle=45)
-            st.plotly_chart(fig_recall, use_container_width=True)
+        # Recall chart (full width)
+        class_recall_df = pd.DataFrame(class_recall_data)
+        fig_recall = px.bar(
+            class_recall_df,
+            x='Class',
+            y='Recall',
+            color='Experiment',
+            barmode='group',
+            title=f'{analysis_mode} Recall by {class_level} - Filtered Data'
+        )
+        fig_recall.update_xaxes(tickangle=45)
+        fig_recall.update_layout(height=500)  # Make it taller for better visibility
+        st.plotly_chart(fig_recall, use_container_width=True)
     
     # Per-Platform F1 Score breakdown
     st.subheader("🎥 Per-Platform F1 Score")
