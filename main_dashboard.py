@@ -40,6 +40,65 @@ def check_dependencies():
         return False
     return True
 
+def calculate_detection_metrics(exp_data, analysis_mode):
+    """Calculate TP, FP, FN consistently across all pages for detection mode"""
+    if analysis_mode == "Detection":
+        # CORRECTED DETECTION LOGIC - consistent across all pages
+        
+        # TP: Model detected something AND something was there (class irrelevant)
+        detection_tp = len(exp_data[
+            (exp_data['ground_truth'] == 0) & 
+            (
+                (exp_data['mistake_kind'] == 'TP') |  # Correct detection
+                (
+                    (exp_data['mistake_kind'] == 'FP') & 
+                    (exp_data['class_mistake'] != 'background') & 
+                    (exp_data['class_mistake'] != '-')
+                )  # Wrong class but object was there
+            )
+        ])
+        
+        # FP: Model detected something BUT nothing was there
+        detection_fp = len(exp_data[
+            (exp_data['ground_truth'] == 0) & 
+            (exp_data['mistake_kind'] == 'FP') & 
+            (exp_data['class_mistake'] == 'background')
+        ])
+        
+        # FN: Model missed something that was there
+        detection_fn = len(exp_data[
+            (exp_data['ground_truth'] == 1) & 
+            (exp_data['mistake_kind'] == 'FN') & 
+            (exp_data['class_mistake'] == 'background')
+        ])
+        
+        return detection_tp, detection_fp, detection_fn
+        
+    elif analysis_mode == "Classification":
+        # Classification analysis: among detected objects only (exclude background)
+        # TP: Correct classifications
+        classification_tp = len(exp_data[exp_data['mistake_kind'] == 'TP'])
+        
+        # FP: Wrong classifications (detected object A, but it was actually object B)
+        classification_fp = len(exp_data[
+            (exp_data['mistake_kind'] == 'FP') & 
+            (exp_data['class_mistake'] != 'background') &
+            (exp_data['class_mistake'] != '-')
+        ])
+        
+        # FN: For classification, we use the same count as FP (mirror relationship)
+        classification_fn = classification_fp
+        
+        return classification_tp, classification_fp, classification_fn
+        
+    else:  # "All Data"
+        # Original logic - use all data
+        overall_tp = len(exp_data[exp_data['mistake_kind'] == 'TP'])
+        overall_fp = len(exp_data[exp_data['mistake_kind'] == 'FP'])
+        overall_fn = len(exp_data[exp_data['mistake_kind'] == 'FN'])
+        
+        return overall_tp, overall_fp, overall_fn
+
 class MultiExperimentAnalyzer:
     def __init__(self):
         """Initialize the multi-experiment analyzer"""
@@ -440,54 +499,37 @@ class MultiExperimentAnalyzer:
             if len(exp_data) == 0:
                 continue
             
-            # Apply analysis mode filtering
+            # Use the consistent calculation function
+            overall_tp, overall_fp, overall_fn = calculate_detection_metrics(exp_data, analysis_mode)
+            
+            # Apply analysis mode filtering for filtered_data
             if analysis_mode == "Detection":
-                # Detection analysis: something vs nothing (background)
-                # TP: Any successful detection
-                detection_tp = len(exp_data[exp_data['mistake_kind'] == 'TP'])
-                
-                # FP: Detected something where there was background
-                detection_fp = len(exp_data[
-                    (exp_data['mistake_kind'] == 'FP') & 
-                    (exp_data['class_mistake'] == 'background')
-                ])
-                
-                # FN: Missed something that was there
-                detection_fn = len(exp_data[
-                    (exp_data['mistake_kind'] == 'FN') & 
-                    (exp_data['class_mistake'] == 'background')
-                ])
-                
-                overall_tp = detection_tp
-                overall_fp = detection_fp
-                overall_fn = detection_fn
-                
                 # Filter data for per-class/platform analysis
                 filtered_exp_data = exp_data[
-                    (exp_data['mistake_kind'] == 'TP') |
-                    ((exp_data['mistake_kind'] == 'FP') & (exp_data['class_mistake'] == 'background')) |
-                    ((exp_data['mistake_kind'] == 'FN') & (exp_data['class_mistake'] == 'background'))
+                    (
+                        (exp_data['ground_truth'] == 0) & 
+                        (
+                            (exp_data['mistake_kind'] == 'TP') |
+                            (
+                                (exp_data['mistake_kind'] == 'FP') & 
+                                (exp_data['class_mistake'] != 'background') & 
+                                (exp_data['class_mistake'] != '-')
+                            )
+                        )
+                    ) |
+                    (
+                        (exp_data['ground_truth'] == 0) & 
+                        (exp_data['mistake_kind'] == 'FP') & 
+                        (exp_data['class_mistake'] == 'background')
+                    ) |
+                    (
+                        (exp_data['ground_truth'] == 1) & 
+                        (exp_data['mistake_kind'] == 'FN') & 
+                        (exp_data['class_mistake'] == 'background')
+                    )
                 ]
                 
             elif analysis_mode == "Classification":
-                # Classification analysis: among detected objects only (exclude background)
-                # TP: Correct classifications
-                classification_tp = len(exp_data[exp_data['mistake_kind'] == 'TP'])
-                
-                # FP: Wrong classifications (detected object A, but it was actually object B)
-                classification_fp = len(exp_data[
-                    (exp_data['mistake_kind'] == 'FP') & 
-                    (exp_data['class_mistake'] != 'background') &
-                    (exp_data['class_mistake'] != '-')
-                ])
-                
-                # FN: For classification, we use the same count as FP (mirror relationship)
-                classification_fn = classification_fp
-                
-                overall_tp = classification_tp
-                overall_fp = classification_fp
-                overall_fn = classification_fn
-                
                 # Filter data for per-class/platform analysis (exclude background cases)
                 filtered_exp_data = exp_data[
                     (exp_data['mistake_kind'] == 'TP') |
@@ -496,9 +538,6 @@ class MultiExperimentAnalyzer:
                 
             else:  # "All Data"
                 # Original logic - use all data
-                overall_tp = len(exp_data[exp_data['mistake_kind'] == 'TP'])
-                overall_fp = len(exp_data[exp_data['mistake_kind'] == 'FP'])
-                overall_fn = len(exp_data[exp_data['mistake_kind'] == 'FN'])
                 filtered_exp_data = exp_data
             
             # Calculate metrics
@@ -542,7 +581,7 @@ def create_experiment_manager():
     if global_mode == "Detection":
         st.sidebar.info(f"**🔍 Detection Mode**: Measures how well the model detects *something* vs *nothing*")
         st.sidebar.markdown("""
-        - **TP**: Any successful detection
+        - **TP**: Any successful detection (even if wrong class)
         - **FP**: False alarms (detected something where there was background)
         - **FN**: Missed detections
         """)
@@ -1198,31 +1237,8 @@ def overall_metrics_page(analyzer):
         for class_name in filtered_data['cls_name'].unique():
             class_data = filtered_data[filtered_data['cls_name'] == class_name]
             
-            if analysis_mode == "Detection":
-                # For detection, all TPs are good regardless of class
-                tp = len(class_data[class_data['mistake_kind'] == 'TP'])
-                fp = len(class_data[
-                    (class_data['mistake_kind'] == 'FP') & 
-                    (class_data['class_mistake'] == 'background')
-                ])
-                fn = len(class_data[
-                    (class_data['mistake_kind'] == 'FN') & 
-                    (class_data['class_mistake'] == 'background')
-                ])
-            elif analysis_mode == "Classification":
-                # For classification, only consider non-background cases
-                tp = len(class_data[class_data['mistake_kind'] == 'TP'])
-                fp = len(class_data[
-                    (class_data['mistake_kind'] == 'FP') & 
-                    (class_data['class_mistake'] != 'background') &
-                    (class_data['class_mistake'] != '-')
-                ])
-                fn = fp  # In classification, FN = FP from other classes' perspective
-            else:
-                # All data
-                tp = len(class_data[class_data['mistake_kind'] == 'TP'])
-                fp = len(class_data[class_data['mistake_kind'] == 'FP'])
-                fn = len(class_data[class_data['mistake_kind'] == 'FN'])
+            # Use consistent calculation
+            tp, fp, fn = calculate_detection_metrics(class_data, analysis_mode)
             
             precision = tp / (tp + fp) if (tp + fp) > 0 else 0
             recall = tp / (tp + fn) if (tp + fn) > 0 else 0
@@ -1281,28 +1297,8 @@ def overall_metrics_page(analyzer):
         for platform_name in filtered_data['platform'].unique():
             platform_data = filtered_data[filtered_data['platform'] == platform_name]
             
-            if analysis_mode == "Detection":
-                tp = len(platform_data[platform_data['mistake_kind'] == 'TP'])
-                fp = len(platform_data[
-                    (platform_data['mistake_kind'] == 'FP') & 
-                    (platform_data['class_mistake'] == 'background')
-                ])
-                fn = len(platform_data[
-                    (platform_data['mistake_kind'] == 'FN') & 
-                    (platform_data['class_mistake'] == 'background')
-                ])
-            elif analysis_mode == "Classification":
-                tp = len(platform_data[platform_data['mistake_kind'] == 'TP'])
-                fp = len(platform_data[
-                    (platform_data['mistake_kind'] == 'FP') & 
-                    (platform_data['class_mistake'] != 'background') &
-                    (platform_data['class_mistake'] != '-')
-                ])
-                fn = fp  # In classification, FN = FP from other classes' perspective
-            else:
-                tp = len(platform_data[platform_data['mistake_kind'] == 'TP'])
-                fp = len(platform_data[platform_data['mistake_kind'] == 'FP'])
-                fn = len(platform_data[platform_data['mistake_kind'] == 'FN'])
+            # Use consistent calculation
+            tp, fp, fn = calculate_detection_metrics(platform_data, analysis_mode)
             
             precision = tp / (tp + fp) if (tp + fp) > 0 else 0
             recall = tp / (tp + fn) if (tp + fn) > 0 else 0
@@ -1393,7 +1389,7 @@ def fp_analysis_page(analyzer):
         st.warning(f"No False Positive data matches the selected filters in {analysis_mode} mode.")
         return
     
-    # FP Rate and Precision Cards (side by side)
+    # FP Rate and Precision Cards (side by side) - FIXED WITH CONSISTENT LOGIC
     st.subheader("📊 Performance Metrics")
     
     # Create rows of metrics cards
@@ -1412,8 +1408,8 @@ def fp_analysis_page(analyzer):
                 exp_filtered = combined_filtered[combined_filtered['experiment_id'] == exp_id]
                 
                 if len(exp_filtered) > 0:
-                    exp_tp = len(exp_filtered[exp_filtered['mistake_kind'] == 'TP'])
-                    exp_fp = len(combined_fp[combined_fp['experiment_id'] == exp_id])
+                    # FIXED: Use consistent calculation for Detection mode
+                    exp_tp, exp_fp, exp_fn = calculate_detection_metrics(exp_filtered, analysis_mode)
                     exp_total_pred = len(exp_filtered[exp_filtered['ground_truth'] == 0])
                     
                     fp_rate = exp_fp / exp_total_pred if exp_total_pred > 0 else 0
@@ -1751,7 +1747,7 @@ def fn_analysis_page(analyzer):
         st.warning(f"No False Negative data matches the selected filters in {analysis_mode} mode.")
         return
     
-    # FN Rate and Recall Cards (side by side)
+    # FN Rate and Recall Cards (side by side) - FIXED WITH CONSISTENT LOGIC
     st.subheader("📊 Performance Metrics")
     
     # Create rows of metrics cards
@@ -1770,8 +1766,8 @@ def fn_analysis_page(analyzer):
                 exp_filtered = combined_filtered[combined_filtered['experiment_id'] == exp_id]
                 
                 if len(exp_filtered) > 0:
-                    exp_tp = len(exp_filtered[exp_filtered['mistake_kind'] == 'TP'])
-                    exp_fn = len(combined_fn[combined_fn['experiment_id'] == exp_id])
+                    # FIXED: Use consistent calculation for Detection mode
+                    exp_tp, exp_fp, exp_fn = calculate_detection_metrics(exp_filtered, analysis_mode)
                     
                     fn_rate = exp_fn / (exp_fn + exp_tp) if (exp_fn + exp_tp) > 0 else 0
                     recall = exp_tp / (exp_tp + exp_fn) if (exp_tp + exp_fn) > 0 else 0
