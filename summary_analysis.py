@@ -15,8 +15,20 @@ def create_summary_filters(analyzer, page_name="Summary Analysis"):
     
     st.markdown(f"## {page_name}")
     
-    # Get all unique values across experiments
-    all_data = pd.concat([exp['data'] for exp in analyzer.experiments.values()], ignore_index=True)
+    # Get global super class mode
+    use_super_class = getattr(st.session_state, 'global_super_class_mode', False)
+    
+    # Get all unique values across experiments (with super class consideration)
+    all_data_list = []
+    for exp_id in analyzer.experiments.keys():
+        exp_data = analyzer.get_processed_data(exp_id, use_super_class)
+        if exp_data is not None:
+            all_data_list.append(exp_data)
+    
+    if not all_data_list:
+        return {}
+    
+    all_data = pd.concat(all_data_list, ignore_index=True)
     
     # Create unique key prefix based on page name
     key_prefix = page_name.replace(" ", "_").replace("(", "").replace(")", "").replace("&", "and")
@@ -59,9 +71,10 @@ def create_summary_filters(analyzer, page_name="Summary Analysis"):
         with col3:
             # Class filter with "All" option
             classes = sorted(all_data['cls_name'].unique())
+            class_label = "🚢 Super Classes" if use_super_class else "🚢 Ship Classes"
             class_options = ['All Classes'] + classes
             selected_classes = st.multiselect(
-                "🚢 Ship Classes",
+                class_label,
                 options=class_options,
                 default=['All Classes'],
                 key=f"{key_prefix}_classes"
@@ -96,7 +109,7 @@ def filter_data_by_analysis_mode(data, analysis_mode):
     else:  # "All Data"
         return data
 
-def calculate_experiment_metrics(analyzer, filters, analysis_mode):
+def calculate_experiment_metrics(analyzer, filters, analysis_mode, use_super_class):
     """Calculate comprehensive metrics for all experiments with filters and analysis mode"""
     experiment_metrics = {}
     
@@ -104,8 +117,11 @@ def calculate_experiment_metrics(analyzer, filters, analysis_mode):
         if exp_id not in analyzer.experiments:
             continue
         
-        # Get filtered data
-        exp_data = analyzer.experiments[exp_id]['data'].copy()
+        # Get filtered data with super class consideration
+        exp_data = analyzer.get_processed_data(exp_id, use_super_class)
+        if exp_data is None:
+            continue
+            
         if filters:
             exp_data = analyzer._apply_filters(exp_data, filters)
         
@@ -200,13 +216,16 @@ def calculate_experiment_metrics(analyzer, filters, analysis_mode):
     
     return experiment_metrics
 
-def calculate_class_distributions(analyzer, exp_id, filters, analysis_mode):
+def calculate_class_distributions(analyzer, exp_id, filters, analysis_mode, use_super_class):
     """Calculate apriori distributions and FP/FN shares for classes with analysis mode"""
     if exp_id not in analyzer.experiments:
         return None
     
-    # Get filtered data
-    exp_data = analyzer.experiments[exp_id]['data'].copy()
+    # Get filtered data with super class consideration
+    exp_data = analyzer.get_processed_data(exp_id, use_super_class)
+    if exp_data is None:
+        return None
+    
     if filters:
         exp_data = analyzer._apply_filters(exp_data, filters)
     
@@ -287,12 +306,13 @@ def calculate_class_distributions(analyzer, exp_id, filters, analysis_mode):
         'gt_counts': gt_counts
     }
 
-def most_problematic_classes_analysis(analyzer, filters, analysis_mode):
+def most_problematic_classes_analysis(analyzer, filters, analysis_mode, use_super_class):
     """Analyze most problematic classes based on apriori vs FP/FN share with analysis mode"""
-    st.subheader(f"🚨 Most Problematic Classes ({analysis_mode} Mode)")
+    class_level = "Super Class" if use_super_class else "Subclass"
+    st.subheader(f"🚨 Most Problematic Classes ({analysis_mode} Mode, {class_level})")
     
     for exp_id in filters.get('experiments', []):
-        dist_data = calculate_class_distributions(analyzer, exp_id, filters, analysis_mode)
+        dist_data = calculate_class_distributions(analyzer, exp_id, filters, analysis_mode, use_super_class)
         if not dist_data:
             continue
         
@@ -347,49 +367,52 @@ def most_problematic_classes_analysis(analyzer, filters, analysis_mode):
             
             # Drill-down by object size
             with st.expander(f"📏 Drill-down by Object Size - {exp_id}"):
-                exp_data = analyzer.experiments[exp_id]['data'].copy()
-                if filters:
-                    exp_data = analyzer._apply_filters(exp_data, filters)
-                
-                for size in sorted(exp_data['bb_size'].unique()):
-                    st.write(f"**{size.capitalize()} Objects:**")
+                # Get raw data for size analysis
+                raw_exp_data = analyzer.get_processed_data(exp_id, use_super_class)
+                if raw_exp_data is not None:
+                    if filters:
+                        raw_exp_data = analyzer._apply_filters(raw_exp_data, filters)
                     
-                    # Filter by size and recalculate
-                    size_filters = filters.copy()
-                    size_filters['sizes'] = [size]
-                    size_dist_data = calculate_class_distributions(analyzer, exp_id, size_filters, analysis_mode)
-                    
-                    if size_dist_data:
-                        size_problematic = []
+                    for size in sorted(raw_exp_data['bb_size'].unique()):
+                        st.write(f"**{size.capitalize()} Objects:**")
                         
-                        for cls in size_dist_data['apriori_dist'].keys():
-                            apriori = size_dist_data['apriori_dist'].get(cls, 0)
-                            fp_share = size_dist_data['fp_shares'].get(cls, 0)
-                            fn_share = size_dist_data['fn_shares'].get(cls, 0)
-                            
-                            fp_gap = fp_share - apriori if fp_share > apriori else 0
-                            fn_gap = fn_share - apriori if fn_share > apriori else 0
-                            
-                            if fp_gap > 0 or fn_gap > 0:
-                                size_problematic.append({
-                                    'Class': cls,
-                                    'Gap %': f"{max(fp_gap, fn_gap) * 100:.1f}%",
-                                    'Type': 'FP' if fp_gap > fn_gap else 'FN',
-                                    'Count': size_dist_data['fp_counts'].get(cls, 0) if fp_gap > fn_gap else size_dist_data['fn_counts'].get(cls, 0)
-                                })
+                        # Filter by size and recalculate
+                        size_filters = filters.copy()
+                        size_filters['sizes'] = [size]
+                        size_dist_data = calculate_class_distributions(analyzer, exp_id, size_filters, analysis_mode, use_super_class)
                         
-                        if size_problematic:
-                            size_df = pd.DataFrame(size_problematic).sort_values('Gap %', ascending=False).head(3)
-                            for _, row in size_df.iterrows():
-                                st.write(f"  • {row['Class']}: {row['Gap %']} ({row['Type']}: {row['Count']})")
-                        else:
-                            st.write("  • No problematic classes for this size")
+                        if size_dist_data:
+                            size_problematic = []
+                            
+                            for cls in size_dist_data['apriori_dist'].keys():
+                                apriori = size_dist_data['apriori_dist'].get(cls, 0)
+                                fp_share = size_dist_data['fp_shares'].get(cls, 0)
+                                fn_share = size_dist_data['fn_shares'].get(cls, 0)
+                                
+                                fp_gap = fp_share - apriori if fp_share > apriori else 0
+                                fn_gap = fn_share - apriori if fn_share > apriori else 0
+                                
+                                if fp_gap > 0 or fn_gap > 0:
+                                    size_problematic.append({
+                                        'Class': cls,
+                                        'Gap %': f"{max(fp_gap, fn_gap) * 100:.1f}%",
+                                        'Type': 'FP' if fp_gap > fn_gap else 'FN',
+                                        'Count': size_dist_data['fp_counts'].get(cls, 0) if fp_gap > fn_gap else size_dist_data['fn_counts'].get(cls, 0)
+                                    })
+                            
+                            if size_problematic:
+                                size_df = pd.DataFrame(size_problematic).sort_values('Gap %', ascending=False).head(3)
+                                for _, row in size_df.iterrows():
+                                    st.write(f"  • {row['Class']}: {row['Gap %']} ({row['Type']}: {row['Count']})")
+                            else:
+                                st.write("  • No problematic classes for this size")
         else:
-            st.info(f"No problematic classes found for {exp_id} in {analysis_mode} mode")
+            st.info(f"No problematic classes found for {exp_id} in {analysis_mode} mode ({class_level})")
 
-def top_performing_classes_by_gap(analyzer, filters, experiments, analysis_mode):
+def top_performing_classes_by_gap(analyzer, filters, experiments, analysis_mode, use_super_class):
     """Analyze top performing classes based on gap logic with analysis mode"""
-    st.write(f"### 🏆 Top Performing Classes ({analysis_mode} Mode)")
+    class_level = "Super Class" if use_super_class else "Subclass"
+    st.write(f"### 🏆 Top Performing Classes ({analysis_mode} Mode, {class_level})")
     
     # Create columns for side-by-side display
     cols = st.columns(len(experiments))
@@ -398,7 +421,7 @@ def top_performing_classes_by_gap(analyzer, filters, experiments, analysis_mode)
         with cols[idx]:
             st.write(f"**{exp_id}**")
             
-            dist_data = calculate_class_distributions(analyzer, exp_id, filters, analysis_mode)
+            dist_data = calculate_class_distributions(analyzer, exp_id, filters, analysis_mode, use_super_class)
             if not dist_data:
                 st.info("No data available")
                 continue
@@ -441,13 +464,14 @@ def top_performing_classes_by_gap(analyzer, filters, experiments, analysis_mode)
                 styled_df = display_df.style.applymap(highlight_good)
                 st.dataframe(styled_df, use_container_width=True, height=230)
             else:
-                st.info(f"No classes performing better than expected in both FP and FN ({analysis_mode} mode)")
+                st.info(f"No classes performing better than expected in both FP and FN ({analysis_mode} mode, {class_level})")
 
-def top_worst_performing_by_f1(analyzer, filters, experiments, analysis_mode):
+def top_worst_performing_by_f1(analyzer, filters, experiments, analysis_mode, use_super_class):
     """Show top and worst performing classes by F1 score with analysis mode"""
-    st.write(f"### 📊 Top/Worst Performing Classes by F1 Score ({analysis_mode} Mode)")
+    class_level = "Super Class" if use_super_class else "Subclass"
+    st.write(f"### 📊 Top/Worst Performing Classes by F1 Score ({analysis_mode} Mode, {class_level})")
     
-    metrics = calculate_experiment_metrics(analyzer, filters, analysis_mode)
+    metrics = calculate_experiment_metrics(analyzer, filters, analysis_mode, use_super_class)
     
     # Create columns for side-by-side display
     cols = st.columns(len(experiments))
@@ -530,11 +554,12 @@ def top_worst_performing_by_f1(analyzer, filters, experiments, analysis_mode):
                 styled_df = perf_df.style.apply(style_row, axis=1)
                 st.dataframe(styled_df, use_container_width=True, height=450)
 
-def performance_gap_analysis(analyzer, filters, analysis_mode):
+def performance_gap_analysis(analyzer, filters, analysis_mode, use_super_class):
     """Analyze performance gaps between experiments with analysis mode"""
-    st.subheader(f"📊 Performance Gap Analysis ({analysis_mode} Mode)")
+    class_level = "Super Class" if use_super_class else "Subclass"
+    st.subheader(f"📊 Performance Gap Analysis ({analysis_mode} Mode, {class_level})")
     
-    metrics = calculate_experiment_metrics(analyzer, filters, analysis_mode)
+    metrics = calculate_experiment_metrics(analyzer, filters, analysis_mode, use_super_class)
     
     if len(metrics) < 2:
         st.warning("Need at least 2 experiments for gap analysis.")
@@ -578,11 +603,12 @@ def performance_gap_analysis(analyzer, filters, analysis_mode):
     
     return gaps_df, comparison_df
 
-def experiment_to_experiment_changes(analyzer, filters, analysis_mode):
+def experiment_to_experiment_changes(analyzer, filters, analysis_mode, use_super_class):
     """Show experiment-to-experiment changes with analysis mode"""
-    st.subheader(f"🔄 Experiment-to-Experiment Changes ({analysis_mode} Mode)")
+    class_level = "Super Class" if use_super_class else "Subclass"
+    st.subheader(f"🔄 Experiment-to-Experiment Changes ({analysis_mode} Mode, {class_level})")
     
-    metrics = calculate_experiment_metrics(analyzer, filters, analysis_mode)
+    metrics = calculate_experiment_metrics(analyzer, filters, analysis_mode, use_super_class)
     experiments = list(metrics.keys())
     
     if len(experiments) < 2:
@@ -650,7 +676,7 @@ def experiment_to_experiment_changes(analyzer, filters, analysis_mode):
             )
         
         # Per-class deltas table
-        st.write("### 📋 Per-Class Performance Changes")
+        st.write(f"### 📋 Per-Class Performance Changes ({class_level})")
         
         # Get common classes
         baseline_classes = set(metrics[baseline_exp]['classes'].keys())
@@ -693,28 +719,31 @@ def experiment_to_experiment_changes(analyzer, filters, analysis_mode):
         st.markdown("---")
         
         # Add Top Performing Classes by Gap Logic
-        top_performing_classes_by_gap(analyzer, filters, selected_experiments, analysis_mode)
+        top_performing_classes_by_gap(analyzer, filters, selected_experiments, analysis_mode, use_super_class)
         
         st.markdown("---")
         
         # Add Top/Worst Performing Classes by F1 Score
-        top_worst_performing_by_f1(analyzer, filters, selected_experiments, analysis_mode)
+        top_worst_performing_by_f1(analyzer, filters, selected_experiments, analysis_mode, use_super_class)
 
 def summary_analysis_page(analyzer):
     """Main summary analysis page with global analysis mode support"""
     # Create page-specific filters
     filters = create_summary_filters(analyzer, "📈 Summary & Comparison Analysis")
     
-    # Get global analysis mode
+    # Get global analysis mode and super class mode
     analysis_mode = getattr(st.session_state, 'global_analysis_mode', 'All Data')
+    use_super_class = getattr(st.session_state, 'global_super_class_mode', False)
     
     # Show analysis mode info
+    class_level = "Super Class" if use_super_class else "Subclass"
+    
     if analysis_mode == "Detection":
-        st.info(f"**🔍 Detection Analysis**: Summary focused on detection performance (something vs nothing)")
+        st.info(f"**🔍 Detection Analysis** ({class_level}): Summary focused on detection performance (something vs nothing)")
     elif analysis_mode == "Classification":
-        st.info(f"**🏷️ Classification Analysis**: Summary focused on classification performance among detected objects")
+        st.info(f"**🏷️ Classification Analysis** ({class_level}): Summary focused on classification performance among detected objects")
     else:
-        st.info(f"**📊 All Data Analysis**: Complete summary including all detection and classification errors")
+        st.info(f"**📊 All Data Analysis** ({class_level}): Complete summary including all detection and classification errors")
     
     if not analyzer.experiments:
         st.warning("Please upload experiment data first.")
@@ -729,18 +758,18 @@ def summary_analysis_page(analyzer):
     # Run analyses in order
     try:
         # 1. Most Problematic Classes (near headline as requested)
-        most_problematic_classes_analysis(analyzer, filters, analysis_mode)
+        most_problematic_classes_analysis(analyzer, filters, analysis_mode, use_super_class)
         
         st.markdown("---")
         
         # 2. Performance Gap Analysis (without graph)
         if len(analyzer.experiments) >= 2:
-            gap_results = performance_gap_analysis(analyzer, filters, analysis_mode)
+            gap_results = performance_gap_analysis(analyzer, filters, analysis_mode, use_super_class)
             
             st.markdown("---")
             
             # 3. Experiment-to-Experiment Changes (includes top performing and F1 analyses)
-            experiment_to_experiment_changes(analyzer, filters, analysis_mode)
+            experiment_to_experiment_changes(analyzer, filters, analysis_mode, use_super_class)
         else:
             st.info("🔍 **Multiple Experiments Required**: Upload more experiments to see gap analysis and experiment comparisons.")
     
