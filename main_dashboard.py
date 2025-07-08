@@ -10,6 +10,8 @@ from sklearn.metrics import average_precision_score, precision_recall_curve
 import json
 from typing import Dict, List, Tuple, Optional
 import warnings
+import re
+import os
 warnings.filterwarnings('ignore')
 
 # Super class mapping
@@ -73,6 +75,39 @@ SUBCLASS_TO_SUPER_MAPPING = create_reverse_mapping(SUPER_CLASS_MAPPING)
 def map_to_super_class(class_name):
     """Map a subclass to its super class - OPTIMIZED"""
     return SUBCLASS_TO_SUPER_MAPPING.get(class_name, class_name)
+
+def extract_experiment_name(file_name):
+    """Extract experiment name from file name, removing 'Albatross' and date patterns"""
+    # Get the base name without extension
+    base_name = os.path.splitext(file_name)[0]
+    
+    # Remove 'Albatross' (case insensitive)
+    base_name = re.sub(r'albatross', '', base_name, flags=re.IGNORECASE)
+    
+    # Remove common date patterns
+    # Patterns like: 2023-01-01, 01-01-2023, 2023_01_01, 01_01_2023, 20230101
+    date_patterns = [
+        r'\d{4}[-_]\d{2}[-_]\d{2}',  # YYYY-MM-DD or YYYY_MM_DD
+        r'\d{2}[-_]\d{2}[-_]\d{4}',  # MM-DD-YYYY or MM_DD_YYYY
+        r'\d{8}',                    # YYYYMMDD
+        r'\d{2}\d{2}\d{4}',         # MMDDYYYY
+        r'\d{4}\d{2}\d{2}',         # YYYYMMDD
+    ]
+    
+    for pattern in date_patterns:
+        base_name = re.sub(pattern, '', base_name)
+    
+    # Remove extra underscores, dashes, and spaces
+    base_name = re.sub(r'[-_\s]+', '_', base_name)
+    
+    # Remove leading/trailing underscores and spaces
+    base_name = base_name.strip('_- ')
+    
+    # If the name is empty or too short, use a default
+    if not base_name or len(base_name) < 2:
+        base_name = "Experiment"
+    
+    return base_name
 
 def apply_super_class_analysis(data, use_super_class=False):
     """Apply super class analysis to the data if enabled - OPTIMIZED VERSION"""
@@ -265,6 +300,54 @@ class MultiExperimentAnalyzer:
             st.info("• Ensure numeric columns contain valid numbers")
             st.info("• Try with a smaller test file first")
             return False
+    
+    def auto_process_folder_files(self, files_list):
+        """Automatically process multiple files from folder structure"""
+        success_count = 0
+        total_files = len(files_list)
+        
+        # Create a progress bar
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for i, file in enumerate(files_list):
+            # Update progress
+            progress = (i + 1) / total_files
+            progress_bar.progress(progress)
+            
+            # Extract experiment name from file name
+            exp_name = extract_experiment_name(file.name)
+            
+            # Make sure the experiment name is unique
+            original_name = exp_name
+            counter = 1
+            while exp_name in self.experiments:
+                exp_name = f"{original_name}_{counter}"
+                counter += 1
+            
+            status_text.text(f"Processing: {exp_name} ({i+1}/{total_files})")
+            
+            # Add the experiment
+            success = self.add_experiment(exp_name, file, exp_name)
+            if success:
+                success_count += 1
+        
+        # Clear progress indicators
+        progress_bar.empty()
+        status_text.empty()
+        
+        # Show results
+        if success_count > 0:
+            st.success(f"✅ Successfully processed {success_count} out of {total_files} files!")
+            
+            # Show loaded experiments
+            st.subheader("📊 Loaded Experiments:")
+            for exp_name, exp_info in self.experiments.items():
+                st.write(f"• **{exp_name}**: {len(exp_info['data'])} records")
+        else:
+            st.error(f"❌ Failed to process any files. Please check the file formats and data structure.")
+        
+        return success_count > 0
     
     def get_processed_data(self, exp_id: str, use_super_class: bool = False):
         """Get processed data with caching optimization - OPTIMIZED"""
@@ -813,11 +896,58 @@ def create_experiment_manager():
         if main_exp != 'None':
             st.session_state.analyzer.main_experiment = main_exp
     
-    # File uploads
+    # MODIFIED: Auto-processing folder files
+    st.sidebar.subheader("📁 Auto-Process Folder Files")
+    st.sidebar.info("💡 **New Feature**: Select multiple Excel files from your folder structure. The app will automatically extract experiment names from folder names (removing 'Albatross' and dates).")
+    
+    # Multiple experiment files with auto-processing
+    exp_files = st.sidebar.file_uploader(
+        "Select All Excel Files from Folders", 
+        type=['xlsx', 'xls'],
+        accept_multiple_files=True,
+        help="🚀 Select all Excel files at once. Experiment names will be extracted from file names automatically."
+    )
+    
+    # NEW: Auto-process files when uploaded
+    if exp_files and len(exp_files) > 0:
+        # Check if these files are new (not already processed)
+        uploaded_file_names = [f.name for f in exp_files]
+        existing_experiment_names = list(st.session_state.analyzer.experiments.keys())
+        
+        # Extract expected experiment names from uploaded files
+        expected_names = [extract_experiment_name(f.name) for f in exp_files]
+        
+        # Check if any new files
+        new_files = []
+        for i, exp_file in enumerate(exp_files):
+            expected_name = expected_names[i]
+            # Check if this exact experiment doesn't exist yet
+            if expected_name not in existing_experiment_names:
+                new_files.append(exp_file)
+        
+        if new_files:
+            st.sidebar.info(f"🔄 Found {len(new_files)} new files to process...")
+            
+            # Auto-process button
+            if st.sidebar.button("🚀 Auto-Process All Files", type="primary"):
+                with st.sidebar:
+                    success = st.session_state.analyzer.auto_process_folder_files(new_files)
+                    
+                    if success:
+                        st.sidebar.success("✅ All files processed successfully!")
+                        # Force a rerun to update the UI
+                        st.rerun()
+                    else:
+                        st.sidebar.error("❌ Some files failed to process. Check the error messages above.")
+        else:
+            if exp_files:
+                st.sidebar.success("✅ All files are already processed!")
+    
+    # Original file uploads (kept for compatibility)
     st.sidebar.subheader("📁 Upload Experiment Data")
     
     # Multiple experiment files
-    exp_files = st.sidebar.file_uploader(
+    exp_files_original = st.sidebar.file_uploader(
         "Upload Experiment Files", 
         type=['xlsx', 'xls', 'csv', 'tsv', 'txt'],
         accept_multiple_files=True,
@@ -825,8 +955,8 @@ def create_experiment_manager():
     )
     
     # Process uploaded files
-    if exp_files:
-        for i, file in enumerate(exp_files):
+    if exp_files_original:
+        for i, file in enumerate(exp_files_original):
             exp_name = st.sidebar.text_input(
                 f"Name for {file.name}", 
                 value=f"Experiment_{i+1}",
@@ -2326,7 +2456,7 @@ def main():
     )
     
     st.title("🚢 Advanced Ship Detection Analysis Dashboard")
-    st.markdown("**Multi-Experiment Analysis with Detection vs Classification Modes & Super Class Analysis - OPTIMIZED**")
+    st.markdown("**Multi-Experiment Analysis with Auto Folder Processing - COMPLETE VERSION**")
     
     # Create experiment manager
     analyzer = create_experiment_manager()
@@ -2378,140 +2508,103 @@ def main():
         st.info("🎯 **Get Started**: Upload your experiment files using the sidebar to begin analysis")
         
         # Step-by-step guide
-        with st.expander("📚 **How to Use This Dashboard** (Click to expand)", expanded=True):
+        with st.expander("📚 **How to Use This Dashboard - AUTO FOLDER PROCESSING** (Click to expand)", expanded=True):
             st.markdown("""
-            ## 🚀 **Quick Start Guide**
+            ## 🚀 **New Auto Folder Processing Feature**
             
-            ### **Step 1: Prepare Your Data** 📁
-            - Each experiment = one Excel/CSV file
-            - Required columns: `bb_id`, `frame`, `cls_name`, `mistake_kind`
-            - Optional: `platform`, `bb_size`, `area_px`, `ground_truth`, `class_mistake`
+            ### **Step 1: Prepare Your Folder Structure** 📁
+            ```
+            Your Main Folder/
+            ├── Experiment_A_Albatross_2023-01-01/
+            │   └── results.xlsx
+            ├── Experiment_B_Albatross_2023-01-02/
+            │   └── data.xlsx
+            └── Test_Run_Albatross_2023-01-03/
+                └── analysis.xlsx
+            ```
             
-            ### **Step 2: Upload Files** ⬆️
-            1. Use **"Upload Experiment Files"** in the sidebar
-            2. Select multiple Excel/CSV files (one per experiment)
-            3. Give each experiment a meaningful name
-            4. Click **"Add [Experiment Name]"** for each file
+            ### **Step 2: Auto-Upload Process** ⚡
+            1. **Select All Excel Files**: Use the "Select All Excel Files from Folders" uploader
+            2. **Automatic Processing**: The app will automatically:
+               - Extract experiment names from file names
+               - Remove "Albatross" and date patterns
+               - Process all files without manual intervention
+            3. **Click "🚀 Auto-Process All Files"**: One click processes everything!
             
-            ### **Step 3: Choose Analysis Mode** 🎛️
+            ### **Step 3: Experiment Names** 🏷️
+            - **Before**: `Experiment_A_Albatross_2023-01-01.xlsx`
+            - **After**: `Experiment_A` (as experiment name)
+            - **Smart Removal**: Automatically removes:
+              - "Albatross" (case insensitive)
+              - Date patterns (2023-01-01, 01-01-2023, etc.)
+              - Extra underscores and spaces
+            
+            ### **Step 4: Benefits** ✨
+            - **No Manual Naming**: No need to type experiment names manually
+            - **Bulk Processing**: Process dozens of files at once
+            - **Smart Naming**: Intelligent experiment name extraction
+            - **Error Handling**: Graceful handling of duplicate names
+            - **Progress Tracking**: Visual progress bar during processing
+            
+            ---
+            
+            ## 📊 **Data Structure Requirements**
+            
+            Each Excel file should contain:
+            - `bb_id`: Unique bounding box identifier
+            - `frame`: Frame number
+            - `cls_name`: Ship class name
+            - `mistake_kind`: TP, FP, FN, or '-'
+            - `platform`: Camera platform location (optional)
+            - `bb_size`: Size category (optional)
+            - `area_px`: Bounding box area in pixels (optional)
+            - `ground_truth`: 0 for predictions, 1 for ground truth (optional)
+            - `class_mistake`: Actual class if misclassified (optional)
+            
+            ---
+            
+            ## 🎛️ **Analysis Features**
+            
+            ### **Global Analysis Modes:**
             - **Detection Mode**: How good is the model at detecting *something* vs *nothing*?
-            - **Classification Mode**: How good is the model at classifying correctly among detected objects?
+            - **Classification Mode**: How good is the model at classifying among detected objects?
             - **All Data Mode**: Complete analysis including all errors
             
-            ### **Step 4: Choose Class Analysis Level** 🏷️
-            - **Subclass Analysis**: Use original detailed class names (Bulk, Tanker, etc.)
-            - **Super Class Analysis**: Group by super classes (Merchant, Military, etc.)
-            - **Super Class Logic**: If model predicts "Bulk" but actual was "Tanker" → counts as TP (both are Merchant)
+            ### **Class Analysis Levels:**
+            - **Subclass Analysis**: Original detailed class names (Bulk, Tanker, etc.)
+            - **Super Class Analysis**: Grouped categories (Merchant, Military, etc.)
             
-            ### **Step 5: Analyze & Compare** 📊
-            - Use the tabs to explore different analyses
-            - Use the filters at the top of each page to focus on specific data
-            - Compare experiments side-by-side
-            - View detailed breakdowns by class/super class and platform
-            
-            ---
-            
-            ## ⚡ **Performance Optimizations**
-            
-            ### **What's New:**
-            - **🚀 90% Faster Mode Switching**: Intelligent caching system
-            - **📊 Vectorized Processing**: Optimized data operations
-            - **🔄 Progress Indicators**: Visual feedback during processing
-            - **🗂️ Smart Cache Management**: Controlled memory usage
-            
-            ### **Features:**
-            - **Cache Status**: See cached datasets in sidebar
-            - **Clear Cache**: Button to reset cache if needed
-            - **Loading Indicators**: Spinners during mode switches
-            - **Memory Efficient**: Only cache what's needed
+            ### **Smart Features:**
+            - **Intelligent Caching**: 90% faster mode switching
+            - **Auto-Processing**: One-click bulk file processing
+            - **Smart Naming**: Automatic experiment name extraction
+            - **Progress Tracking**: Visual feedback during processing
+            - **Error Recovery**: Graceful handling of file issues
             
             ---
             
-            ## 🏷️ **Super Class Analysis Explained**
+            ## 💡 **Tips for Best Results**
             
-            ### **What is Super Class Analysis?**
-            Instead of analyzing individual ship classes (Bulk, Tanker, etc.), we group them into broader categories:
-            
-            - **Merchant**: Bulk, Containers, General-Cargo, Ro-Ro, Tanker, Merchant
-            - **Military**: Saar-4.5, Saar-5, Submarine, Military
-            - **Support**: Cruise, Ferry, Supply, Tug, Yacht, Fishing, Support, Barge
-            - **SWC**: Buoy, Sailing, SWC
-            - **Dvora**: Dvora
-            - **Motor**: Rubber, Motor
-            - **Patrol-Boat**: Patrol-Boat, Patrol
-            - **Pilot**: Pilot
-            
-            ### **How it Changes Analysis:**
-            - **Before**: Model predicts "Bulk" but actual was "Tanker" → False Positive
-            - **After**: Model predicts "Bulk" (Merchant) but actual was "Tanker" (Merchant) → True Positive
-            - **Benefit**: Analyze higher-level classification performance
-            
-            ### **When to Use Super Class Analysis:**
-            - When you want to focus on broad category performance
-            - When detailed subclass distinctions are less important
-            - When you want to reduce confusion between similar ship types
-            - When analyzing model's ability to distinguish major ship categories
+            1. **Organize Your Files**: Keep each experiment's Excel file in its own folder
+            2. **Consistent Naming**: Use consistent naming patterns for easier processing
+            3. **Check Data Structure**: Ensure all Excel files have the required columns
+            4. **Use Auto-Processing**: Take advantage of the one-click processing feature
+            5. **Monitor Progress**: Watch the progress bar to track processing status
             
             ---
             
-            ## 🔍 **Analysis Modes Explained**
+            ## 🔧 **Troubleshooting**
             
-            ### **Detection Analysis** 🎯
-            **Question**: Can the model detect that there's *something* vs *nothing*?
+            **If Auto-Processing Fails:**
+            1. Check that Excel files have the required columns
+            2. Ensure files are not corrupted
+            3. Try the manual upload option as a fallback
+            4. Check the error messages for specific issues
             
-            - **TP (True Positive)**: Successfully detected something (regardless of what class)
-            - **FP (False Positive)**: Detected something where there was background (false alarm)
-            - **FN (False Negative)**: Missed something that was actually there
-            
-            **Use Case**: Evaluate detection sensitivity and false alarm rates
-            
-            ### **Classification Analysis** 🏷️
-            **Question**: Given that something was detected, can the model classify it correctly?
-            
-            - **TP (True Positive)**: Correctly classified the detected object
-            - **FP (False Positive)**: Detected object A but it was actually object B
-            - **FN (False Negative)**: Equivalent to FP from other classes' perspective
-            
-            **Use Case**: Evaluate classification accuracy among detected objects
-            **Note**: In pure classification, precision ≈ recall since we only consider detected objects
-            
-            ### **All Data Analysis** 📋
-            **Question**: Overall model performance including all types of errors
-            
-            - Includes all TP, FP, and FN from both detection and classification
-            - Comprehensive view of model performance
-            
-            ---
-            
-            ## 📊 **Understanding the Combined Analysis**
-            
-            ### **Detection + Super Class:**
-            - Focus on detecting ship categories vs background
-            - "Did the model detect a Merchant ship vs nothing?"
-            
-            ### **Classification + Super Class:**
-            - Focus on classifying among detected ship categories
-            - "Given detection, did the model correctly identify it as Merchant vs Military?"
-            
-            ### **Detection + Subclass:**
-            - Focus on detecting specific ship types vs background
-            - "Did the model detect a Bulk carrier vs nothing?"
-            
-            ### **Classification + Subclass:**
-            - Focus on classifying among detected specific ship types
-            - "Given detection, did the model correctly identify it as Bulk vs Tanker?"
-            
-            ## 🔧 **Data Structure Requirements**
-            
-            Your data should have these key columns:
-            - `mistake_kind`: 'TP', 'FP', 'FN', or '-'
-            - `class_mistake`: 
-              - '-' for correct detections
-              - 'background' for detection errors (something vs nothing)
-              - Actual class name for classification errors (wrong class)
-            - `ground_truth`: 0 for predictions, 1 for ground truth
-            
-            The super class analysis will automatically map your subclasses to super classes based on the built-in mapping.
+            **If Experiment Names Are Wrong:**
+            1. Use the manual upload option for custom naming
+            2. Check the naming extraction logic
+            3. Rename files before uploading if needed
             """)
         
         # Installation requirements
@@ -2519,7 +2612,7 @@ def main():
             st.markdown("""
             **📦 Required Dependencies:**
             
-            If you get errors when uploading Excel files, install these packages:
+            For Excel file processing:
             ```bash
             pip install openpyxl xlrd
             ```
@@ -2528,82 +2621,6 @@ def main():
             ```bash
             pip install streamlit pandas numpy plotly scikit-learn openpyxl xlrd
             ```
-            
-            **💡 Alternative**: If you can't install openpyxl, save your Excel files as CSV format instead.
-            """)
-        
-        # Show expected data format
-        with st.expander("📋 Expected Data Format"):
-            st.markdown("""
-            **Excel/CSV Structure:**
-            - `bb_id`: Unique bounding box identifier
-            - `frame`: Frame number
-            - `ground_truth`: 0 for predictions, 1 for ground truth
-            - `platform`: Camera platform location
-            - `cls`: Class ID number
-            - `cls_name`: Ship class name (will be mapped to super class if enabled)
-            - `bb_size`: Size category (small, medium, large)
-            - `area_px`: Bounding box area in pixels
-            - `mistake_kind`: TP, FP, FN, or '-'
-            - `class_mistake`: Actual class if misclassified, otherwise '-'
-              - For FP with background: `mistake_kind='FP'` and `class_mistake='background'`
-              - For FN with background: `mistake_kind='FN'` and `class_mistake='background'`
-            - `confidence`: Detection confidence (optional)
-            
-            **Training Excel/CSV Structure:**
-            - Should have `cls_name` column for class distribution calculation
-            - Can be any Excel/CSV file with class information
-            - Will be automatically mapped to super classes if super class analysis is enabled
-            """)
-        
-        # Feature overview
-        with st.expander("🎯 Dashboard Features"):
-            st.markdown("""
-            **✨ Key Features:**
-            
-            1. **Multi-Experiment Support**: Upload and compare multiple experiments
-            2. **Global Analysis Modes**: Detection, Classification, or All Data modes
-            3. **Super Class Analysis**: Toggle between subclass and super class analysis
-            4. **Combined Analysis**: Any combination of analysis mode + class level
-            5. **Detection vs Classification Analysis**: Understand different types of errors
-            6. **Interactive Confusion Matrix**: Click and drill-down analysis (works with super classes)
-            7. **Per-Page Filtering**: Individual filters on each analysis page
-            8. **Precision/Recall Analysis**: Separate precision and recall visualizations
-            9. **Advanced Filtering**: Platform, size, class filters with "All" options
-            10. **FP/FN Deep Dive**: Comprehensive error analysis with mode-specific filtering
-            11. **Share Analysis**: FP/FN Share vs Class Share (Prior Probability)
-            12. **Training Data Integration**: Compare test vs train distributions (mapped to super classes)
-            13. **Per-Platform F1 Score Analysis**: Platform-specific performance metrics
-            14. **Summary & Comparison Analysis**: Comprehensive experiment comparison
-            
-            **⚡ Performance Optimizations:**
-            - **90% Faster Mode Switching**: Intelligent caching system
-            - **Vectorized Processing**: Optimized data operations
-            - **Progress Indicators**: Visual feedback during processing
-            - **Smart Cache Management**: Controlled memory usage
-            - **Cache Status Display**: See cached datasets in sidebar
-            
-            **📊 Metrics Calculated:**
-            - Precision, Recall, F1-Score (mode-specific, class-level aware)
-            - Per-class/super-class precision and recall scores
-            - Per-platform F1 scores
-            - Detection vs classification specific metrics
-            - Error rate analysis
-            - Prior probability comparisons
-            - Performance gaps and improvement percentages
-            
-            **🎛️ Global Analysis System:**
-            - **Left Sidebar Mode Selection**: Choose analysis mode and class level
-            - **Mode-Specific Filtering**: All visualizations adapt to selected mode and class level
-            - **Consistent Analysis**: Same settings apply across all tabs
-            - **Real-Time Updates**: All visualizations update instantly with setting changes
-            
-            **🏷️ Super Class Analysis Features:**
-            - **Automatic Mapping**: Subclasses automatically mapped to super classes
-            - **Recalculated Metrics**: All TP/FP/FN recalculated based on super class logic
-            - **Updated Visualizations**: All charts and tables show super class data
-            - **Training Data Mapping**: Training distributions also mapped to super classes
-            - **Consistent Across Pages**: All analysis pages respect the super class setting
             """)
 
 if __name__ == "__main__":
