@@ -14,6 +14,19 @@ import re
 import os
 warnings.filterwarnings('ignore')
 
+# Helper function to split long names for graph display
+def split_long_name(name, max_len=18):
+    """Split a long name into two lines for better graph display."""
+    if len(name) <= max_len:
+        return name
+    # Try to split at the nearest underscore, dash, or space before max_len
+    for sep in ['_', '-', ' ']:
+        idx = name.rfind(sep, 0, max_len)
+        if idx != -1:
+            return name[:idx+1] + "<br>" + name[idx+1:]
+    # If no separator found, just split at max_len
+    return name[:max_len] + "<br>" + name[max_len:]
+
 # Super class mapping
 SUPER_CLASS_MAPPING = {
     "Merchant": [
@@ -376,13 +389,10 @@ class MultiExperimentAnalyzer:
     def set_train_data(self, train_file):
         """Set training data from Excel/CSV file"""
         try:
-            # Read training data using the same safe file reading method
             train_data = self._safe_read_file(train_file)
-            
             if train_data is not None and not train_data.empty:
                 self.train_data = train_data
-                # Process train data to get class distribution
-                self.train_class_distribution = self._calculate_train_distribution()
+                self.train_class_distribution = cached_train_class_distribution(train_data)
                 return True
             else:
                 st.error("❌ No training data found in file or file is empty")
@@ -392,126 +402,17 @@ class MultiExperimentAnalyzer:
             return False
     
     def _safe_read_file(self, file_path):
-        """Safely read file with multiple encoding attempts"""
+        """Safely read file with multiple encoding attempts, now using cache."""
         if hasattr(file_path, 'name'):
-            filename = file_path.name.lower()
-            
-            if filename.endswith(('.xlsx', '.xls')):
-                try:
-                    return pd.read_excel(file_path)
-                except ImportError as e:
-                    if 'openpyxl' in str(e):
-                        st.error("📦 **Missing Dependency**: openpyxl is required to read Excel files.")
-                        st.info("🔧 **Quick Fix**: Run this command in your terminal:")
-                        st.code("pip install openpyxl", language="bash")
-                        st.warning("⚠️ **Alternative**: Save your Excel file as CSV and upload that instead.")
-                        return None
-                    else:
-                        st.error(f"Import error reading Excel file: {str(e)}")
-                        return None
-                except Exception as e:
-                    st.error(f"Error reading Excel file: {str(e)}")
-                    st.info("💡 **Tip**: Try saving your Excel file as CSV format and uploading that instead.")
-                    return None
-            
-            # Try CSV with different encodings
-            encodings_to_try = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
-            
-            for encoding in encodings_to_try:
-                try:
-                    file_path.seek(0)
-                    for sep in ['\t', ',', ';']:
-                        try:
-                            file_path.seek(0)
-                            df = pd.read_csv(file_path, encoding=encoding, sep=sep)
-                            if len(df.columns) > 5:
-                                st.success(f"✅ CSV loaded successfully (encoding: {encoding}, separator: '{sep}')")
-                                return df
-                        except Exception as csv_error:
-                            continue
-                except Exception as encoding_error:
-                    continue
-            
-            st.error("❌ Could not read file. Please check:")
-            st.info("• File format is supported (.xlsx, .xls, .csv)")
-            st.info("• Excel files: Install openpyxl with `pip install openpyxl`")
-            st.info("• CSV files: Check encoding (try saving as UTF-8)")
-            return None
-        
-        return pd.read_excel(file_path) if isinstance(file_path, str) else None
+            file_bytes = file_path.read()
+            file_name = file_path.name
+            file_size = len(file_bytes)
+            return cached_safe_read_file(file_bytes, file_name, file_size)
+        return None
     
     def process_experiment_data(self, df: pd.DataFrame, exp_id: str) -> pd.DataFrame:
-        """Process experiment data to add derived columns - OPTIMIZED"""
-        try:
-            processed_df = df.copy()
-            processed_df['experiment_id'] = exp_id
-            
-            # OPTIMIZATION: Vectorized numeric conversion
-            numeric_cols = ['area_px', 'frame', 'cls', 'ground_truth']
-            for col in numeric_cols:
-                if col in processed_df.columns:
-                    processed_df[col] = pd.to_numeric(processed_df[col], errors='coerce')
-                else:
-                    # Set default values for missing columns
-                    if col == 'ground_truth':
-                        processed_df[col] = 0  # Assume predictions if not specified
-                    elif col == 'area_px':
-                        processed_df[col] = 1000  # Default area
-                    elif col == 'cls':
-                        processed_df[col] = 0  # Default class ID
-            
-            # OPTIMIZATION: Vectorized string conversion
-            string_cols = ['cls_name', 'bb_size', 'platform', 'mistake_kind', 'class_mistake']
-            for col in string_cols:
-                if col in processed_df.columns:
-                    processed_df[col] = processed_df[col].astype(str)
-                    processed_df[col] = processed_df[col].replace('nan', '-')
-                else:
-                    # Set default values for missing columns
-                    if col == 'bb_size':
-                        processed_df[col] = 'medium'
-                    elif col == 'platform':
-                        processed_df[col] = 'unknown'
-                    elif col == 'class_mistake':
-                        processed_df[col] = '-'
-            
-            # OPTIMIZATION: Vectorized binary indicators
-            processed_df['TP'] = (processed_df['mistake_kind'] == 'TP').astype(int)
-            processed_df['FP'] = (processed_df['mistake_kind'] == 'FP').astype(int)
-            processed_df['FN'] = (processed_df['mistake_kind'] == 'FN').astype(int)
-            
-            # Calculate area categories (15 ranges) with better error handling
-            if 'area_px' in processed_df.columns and processed_df['area_px'].notna().any():
-                processed_df['area_category'] = self._categorize_area(processed_df['area_px'])
-            else:
-                processed_df['area_category'] = 'Unknown'
-            
-            # Add confidence scores (placeholder if not available)
-            if 'confidence' not in processed_df.columns:
-                processed_df['confidence'] = np.where(
-                    processed_df['ground_truth'] == 0,
-                    np.random.uniform(0.5, 1.0, len(processed_df)),
-                    np.nan
-                )
-            
-            # Drop rows with critical missing data
-            initial_count = len(processed_df)
-            processed_df = processed_df.dropna(subset=['bb_id', 'cls_name', 'mistake_kind'])
-            final_count = len(processed_df)
-            
-            if initial_count != final_count:
-                st.warning(f"⚠️ Dropped {initial_count - final_count} rows with missing critical data")
-            
-            if len(processed_df) == 0:
-                st.error("❌ No valid data remaining after processing")
-                return None
-            
-            st.success(f"✅ Processed {len(processed_df)} records successfully")
-            return processed_df
-            
-        except Exception as e:
-            st.error(f"❌ Error processing data: {str(e)}")
-            return None
+        """Process experiment data to add derived columns - now using cache."""
+        return cached_process_experiment_data(df, exp_id)
     
     def _categorize_area(self, areas: pd.Series) -> pd.Series:
         """Categorize areas with optimal bins based on data distribution analysis - OPTIMIZED"""
@@ -864,7 +765,7 @@ def create_experiment_manager():
         st.sidebar.info(f"**🏷️ Classification Mode**: Measures classification accuracy among detected objects only")
         st.sidebar.markdown("""
         - **TP**: Correct classifications
-        - **FP**: Wrong classifications (detected A, but was actually B)
+        - **FP**: Wrong classifications (detected object A, but it was actually object B)
         - **FN**: Mirror of FP (from other classes' perspective)
         """)
     else:
@@ -1922,38 +1823,33 @@ def fp_analysis_page(analyzer):
     
     # FP Distribution - Separate by Experiment
     st.subheader(f"📊 FP Distribution by Experiment ({analysis_mode} Mode, {class_level})")
-    
     # Create columns for side-by-side experiment comparison
     if len(experiment_ids) > 1:
-        cols = st.columns(len(experiment_ids))
-        
-        for i, exp_id in enumerate(experiment_ids):
-            # Get FP data for this specific experiment
-            exp_fp_data = combined_fp[combined_fp['experiment_id'] == exp_id]
-            
-            if len(exp_fp_data) > 0:
-                with cols[i]:
-                    fp_dist = exp_fp_data['cls_name'].value_counts()
-                    fig_dist = px.bar(
-                        x=fp_dist.index,
-                        y=fp_dist.values,
-                        title=f"FP Distribution - {exp_id}",
-                        labels={'x': f'Ship {class_level}', 'y': 'FP Count'}
-                    )
-                    fig_dist.update_xaxes(tickangle=45)
-                    fig_dist.update_layout(height=400)
-                    st.plotly_chart(fig_dist, use_container_width=True)
-                    
-                    # Show total count
-                    st.metric(f"Total FPs - {exp_id}", len(exp_fp_data))
-            else:
-                with cols[i]:
-                    st.warning(f"No FP data for {exp_id}")
+        for row_start in range(0, len(experiment_ids), 2):
+            cols = st.columns(min(2, len(experiment_ids) - row_start))
+            for i in range(min(2, len(experiment_ids) - row_start)):
+                exp_id = experiment_ids[row_start + i]
+                exp_fp_data = combined_fp[combined_fp['experiment_id'] == exp_id]
+                if len(exp_fp_data) > 0:
+                    with cols[i]:
+                        fp_dist = exp_fp_data['cls_name'].value_counts()
+                        fig_dist = px.bar(
+                            x=fp_dist.index,
+                            y=fp_dist.values,
+                            title=f"FP Distribution - {exp_id}",
+                            labels={'x': f'Ship {class_level}', 'y': 'FP Count'}
+                        )
+                        fig_dist.update_xaxes(tickangle=45)
+                        fig_dist.update_layout(height=400)
+                        st.plotly_chart(fig_dist, use_container_width=True)
+                        st.metric(f"Total FPs - {exp_id}", len(exp_fp_data))
+                else:
+                    with cols[i]:
+                        st.warning(f"No FP data for {exp_id}")
     else:
         # Single experiment - full width
         exp_id = experiment_ids[0]
         exp_fp_data = combined_fp[combined_fp['experiment_id'] == exp_id]
-        
         if len(exp_fp_data) > 0:
             fp_dist = exp_fp_data['cls_name'].value_counts()
             fig_dist = px.bar(
@@ -1967,40 +1863,35 @@ def fp_analysis_page(analyzer):
     
     # FP Area Distribution - Separate by Experiment (FIXED WITH CHRONOLOGICAL ORDER)
     st.subheader(f"📐 FP Area Distribution by Experiment ({analysis_mode} Mode, {class_level})")
-    
     if 'area_category' in combined_fp.columns:
-        # Get the chronological order for area categories
         area_category_order = analyzer._get_area_category_order(combined_fp)
-        
         if len(experiment_ids) > 1:
-            cols = st.columns(len(experiment_ids))
-            
-            for i, exp_id in enumerate(experiment_ids):
-                exp_fp_data = combined_fp[combined_fp['experiment_id'] == exp_id]
-                
-                if len(exp_fp_data) > 0:
-                    with cols[i]:
-                        fig_area = px.histogram(
-                            exp_fp_data,
-                            x='area_category',
-                            title=f"FP Area Distribution - {exp_id}",
-                            labels={'area_category': 'Area Category', 'count': 'FP Count'}
-                        )
-                        fig_area.update_xaxes(
-                            tickangle=45,
-                            categoryorder='array',
-                            categoryarray=area_category_order
-                        )
-                        fig_area.update_layout(height=400)
-                        st.plotly_chart(fig_area, use_container_width=True)
-                else:
-                    with cols[i]:
-                        st.warning(f"No FP area data for {exp_id}")
+            for row_start in range(0, len(experiment_ids), 2):
+                cols = st.columns(min(2, len(experiment_ids) - row_start))
+                for i in range(min(2, len(experiment_ids) - row_start)):
+                    exp_id = experiment_ids[row_start + i]
+                    exp_fp_data = combined_fp[combined_fp['experiment_id'] == exp_id]
+                    if len(exp_fp_data) > 0:
+                        with cols[i]:
+                            fig_area = px.histogram(
+                                exp_fp_data,
+                                x='area_category',
+                                title=f"FP Area Distribution - {exp_id}",
+                                labels={'area_category': 'Area Category', 'count': 'FP Count'}
+                            )
+                            fig_area.update_xaxes(
+                                tickangle=45,
+                                categoryorder='array',
+                                categoryarray=area_category_order
+                            )
+                            fig_area.update_layout(height=400)
+                            st.plotly_chart(fig_area, use_container_width=True)
+                    else:
+                        with cols[i]:
+                            st.warning(f"No FP area data for {exp_id}")
         else:
-            # Single experiment - full width
             exp_id = experiment_ids[0]
             exp_fp_data = combined_fp[combined_fp['experiment_id'] == exp_id]
-            
             if len(exp_fp_data) > 0:
                 fig_area = px.histogram(
                     exp_fp_data,
@@ -2017,45 +1908,41 @@ def fp_analysis_page(analyzer):
     
     # FP Heatmap - Separate by Experiment
     st.subheader(f"🔥 FP Heatmap (Platform vs {class_level}) by Experiment ({analysis_mode} Mode)")
-    
     if len(combined_fp) > 0:
         if len(experiment_ids) > 1:
-            cols = st.columns(len(experiment_ids))
-            
-            for i, exp_id in enumerate(experiment_ids):
-                exp_fp_data = combined_fp[combined_fp['experiment_id'] == exp_id]
-                
-                if len(exp_fp_data) > 0:
-                    with cols[i]:
-                        fp_heatmap_data = exp_fp_data.pivot_table(
-                            index='platform',
-                            columns='cls_name',
-                            values='bb_id',
-                            aggfunc='count',
-                            fill_value=0
-                        )
-                        
-                        if not fp_heatmap_data.empty:
-                            fig_heatmap = px.imshow(
-                                fp_heatmap_data.values,
-                                x=fp_heatmap_data.columns,
-                                y=fp_heatmap_data.index,
-                                color_continuous_scale='Reds',
-                                title=f"FP Heatmap - {exp_id}",
-                                text_auto=True
+            for row_start in range(0, len(experiment_ids), 2):
+                cols = st.columns(min(2, len(experiment_ids) - row_start))
+                for i in range(min(2, len(experiment_ids) - row_start)):
+                    exp_id = experiment_ids[row_start + i]
+                    exp_fp_data = combined_fp[combined_fp['experiment_id'] == exp_id]
+                    if len(exp_fp_data) > 0:
+                        with cols[i]:
+                            fp_heatmap_data = exp_fp_data.pivot_table(
+                                index='platform',
+                                columns='cls_name',
+                                values='bb_id',
+                                aggfunc='count',
+                                fill_value=0
                             )
-                            fig_heatmap.update_layout(height=400)
-                            st.plotly_chart(fig_heatmap, use_container_width=True)
-                        else:
-                            st.warning(f"No heatmap data for {exp_id}")
-                else:
-                    with cols[i]:
-                        st.warning(f"No FP heatmap data for {exp_id}")
+                            if not fp_heatmap_data.empty:
+                                fig_heatmap = px.imshow(
+                                    fp_heatmap_data.values,
+                                    x=fp_heatmap_data.columns,
+                                    y=fp_heatmap_data.index,
+                                    color_continuous_scale='Reds',
+                                    title=f"FP Heatmap - {exp_id}",
+                                    text_auto=True
+                                )
+                                fig_heatmap.update_layout(height=400)
+                                st.plotly_chart(fig_heatmap, use_container_width=True)
+                            else:
+                                st.warning(f"No heatmap data for {exp_id}")
+                    else:
+                        with cols[i]:
+                            st.warning(f"No FP heatmap data for {exp_id}")
         else:
-            # Single experiment - full width
             exp_id = experiment_ids[0]
             exp_fp_data = combined_fp[combined_fp['experiment_id'] == exp_id]
-            
             if len(exp_fp_data) > 0:
                 fp_heatmap_data = exp_fp_data.pivot_table(
                     index='platform',
@@ -2064,7 +1951,6 @@ def fp_analysis_page(analyzer):
                     aggfunc='count',
                     fill_value=0
                 )
-                
                 if not fp_heatmap_data.empty:
                     fig_heatmap = px.imshow(
                         fp_heatmap_data.values,
@@ -2293,38 +2179,33 @@ def fn_analysis_page(analyzer):
     
     # FN Distribution - Separate by Experiment
     st.subheader(f"📊 FN Distribution by Experiment ({analysis_mode} Mode, {class_level})")
-    
     # Create columns for side-by-side experiment comparison
     if len(experiment_ids) > 1:
-        cols = st.columns(len(experiment_ids))
-        
-        for i, exp_id in enumerate(experiment_ids):
-            # Get FN data for this specific experiment
-            exp_fn_data = combined_fn[combined_fn['experiment_id'] == exp_id]
-            
-            if len(exp_fn_data) > 0:
-                with cols[i]:
-                    fn_dist = exp_fn_data['cls_name'].value_counts()
-                    fig_dist = px.bar(
-                        x=fn_dist.index,
-                        y=fn_dist.values,
-                        title=f"FN Distribution - {exp_id}",
-                        labels={'x': f'Ship {class_level}', 'y': 'FN Count'}
-                    )
-                    fig_dist.update_xaxes(tickangle=45)
-                    fig_dist.update_layout(height=400)
-                    st.plotly_chart(fig_dist, use_container_width=True)
-                    
-                    # Show total count
-                    st.metric(f"Total FNs - {exp_id}", len(exp_fn_data))
-            else:
-                with cols[i]:
-                    st.warning(f"No FN data for {exp_id}")
+        for row_start in range(0, len(experiment_ids), 2):
+            cols = st.columns(min(2, len(experiment_ids) - row_start))
+            for i in range(min(2, len(experiment_ids) - row_start)):
+                exp_id = experiment_ids[row_start + i]
+                exp_fn_data = combined_fn[combined_fn['experiment_id'] == exp_id]
+                if len(exp_fn_data) > 0:
+                    with cols[i]:
+                        fn_dist = exp_fn_data['cls_name'].value_counts()
+                        fig_dist = px.bar(
+                            x=fn_dist.index,
+                            y=fn_dist.values,
+                            title=f"FN Distribution - {exp_id}",
+                            labels={'x': f'Ship {class_level}', 'y': 'FN Count'}
+                        )
+                        fig_dist.update_xaxes(tickangle=45)
+                        fig_dist.update_layout(height=400)
+                        st.plotly_chart(fig_dist, use_container_width=True)
+                        st.metric(f"Total FNs - {exp_id}", len(exp_fn_data))
+                else:
+                    with cols[i]:
+                        st.warning(f"No FN data for {exp_id}")
     else:
         # Single experiment - full width
         exp_id = experiment_ids[0]
         exp_fn_data = combined_fn[combined_fn['experiment_id'] == exp_id]
-        
         if len(exp_fn_data) > 0:
             fn_dist = exp_fn_data['cls_name'].value_counts()
             fig_dist = px.bar(
@@ -2338,40 +2219,35 @@ def fn_analysis_page(analyzer):
     
     # FN Area Distribution - Separate by Experiment (FIXED WITH CHRONOLOGICAL ORDER)
     st.subheader(f"📐 FN Area Distribution by Experiment ({analysis_mode} Mode, {class_level})")
-    
     if 'area_category' in combined_fn.columns:
-        # Get the chronological order for area categories
         area_category_order = analyzer._get_area_category_order(combined_fn)
-        
         if len(experiment_ids) > 1:
-            cols = st.columns(len(experiment_ids))
-            
-            for i, exp_id in enumerate(experiment_ids):
-                exp_fn_data = combined_fn[combined_fn['experiment_id'] == exp_id]
-                
-                if len(exp_fn_data) > 0:
-                    with cols[i]:
-                        fig_area = px.histogram(
-                            exp_fn_data,
-                            x='area_category',
-                            title=f"FN Area Distribution - {exp_id}",
-                            labels={'area_category': 'Area Category', 'count': 'FN Count'}
-                        )
-                        fig_area.update_xaxes(
-                            tickangle=45,
-                            categoryorder='array',
-                            categoryarray=area_category_order
-                        )
-                        fig_area.update_layout(height=400)
-                        st.plotly_chart(fig_area, use_container_width=True)
-                else:
-                    with cols[i]:
-                        st.warning(f"No FN area data for {exp_id}")
+            for row_start in range(0, len(experiment_ids), 2):
+                cols = st.columns(min(2, len(experiment_ids) - row_start))
+                for i in range(min(2, len(experiment_ids) - row_start)):
+                    exp_id = experiment_ids[row_start + i]
+                    exp_fn_data = combined_fn[combined_fn['experiment_id'] == exp_id]
+                    if len(exp_fn_data) > 0:
+                        with cols[i]:
+                            fig_area = px.histogram(
+                                exp_fn_data,
+                                x='area_category',
+                                title=f"FN Area Distribution - {exp_id}",
+                                labels={'area_category': 'Area Category', 'count': 'FN Count'}
+                            )
+                            fig_area.update_xaxes(
+                                tickangle=45,
+                                categoryorder='array',
+                                categoryarray=area_category_order
+                            )
+                            fig_area.update_layout(height=400)
+                            st.plotly_chart(fig_area, use_container_width=True)
+                    else:
+                        with cols[i]:
+                            st.warning(f"No FN area data for {exp_id}")
         else:
-            # Single experiment - full width
             exp_id = experiment_ids[0]
             exp_fn_data = combined_fn[combined_fn['experiment_id'] == exp_id]
-            
             if len(exp_fn_data) > 0:
                 fig_area = px.histogram(
                     exp_fn_data,
@@ -2388,45 +2264,41 @@ def fn_analysis_page(analyzer):
     
     # FN Heatmap - Separate by Experiment
     st.subheader(f"🔥 FN Heatmap (Platform vs {class_level}) by Experiment ({analysis_mode} Mode)")
-    
     if len(combined_fn) > 0:
         if len(experiment_ids) > 1:
-            cols = st.columns(len(experiment_ids))
-            
-            for i, exp_id in enumerate(experiment_ids):
-                exp_fn_data = combined_fn[combined_fn['experiment_id'] == exp_id]
-                
-                if len(exp_fn_data) > 0:
-                    with cols[i]:
-                        fn_heatmap_data = exp_fn_data.pivot_table(
-                            index='platform',
-                            columns='cls_name',
-                            values='bb_id',
-                            aggfunc='count',
-                            fill_value=0
-                        )
-                        
-                        if not fn_heatmap_data.empty:
-                            fig_heatmap = px.imshow(
-                                fn_heatmap_data.values,
-                                x=fn_heatmap_data.columns,
-                                y=fn_heatmap_data.index,
-                                color_continuous_scale='Blues',
-                                title=f"FN Heatmap - {exp_id}",
-                                text_auto=True
+            for row_start in range(0, len(experiment_ids), 2):
+                cols = st.columns(min(2, len(experiment_ids) - row_start))
+                for i in range(min(2, len(experiment_ids) - row_start)):
+                    exp_id = experiment_ids[row_start + i]
+                    exp_fn_data = combined_fn[combined_fn['experiment_id'] == exp_id]
+                    if len(exp_fn_data) > 0:
+                        with cols[i]:
+                            fn_heatmap_data = exp_fn_data.pivot_table(
+                                index='platform',
+                                columns='cls_name',
+                                values='bb_id',
+                                aggfunc='count',
+                                fill_value=0
                             )
-                            fig_heatmap.update_layout(height=400)
-                            st.plotly_chart(fig_heatmap, use_container_width=True)
-                        else:
-                            st.warning(f"No heatmap data for {exp_id}")
-                else:
-                    with cols[i]:
-                        st.warning(f"No FN heatmap data for {exp_id}")
+                            if not fn_heatmap_data.empty:
+                                fig_heatmap = px.imshow(
+                                    fn_heatmap_data.values,
+                                    x=fn_heatmap_data.columns,
+                                    y=fn_heatmap_data.index,
+                                    color_continuous_scale='Blues',
+                                    title=f"FN Heatmap - {exp_id}",
+                                    text_auto=True
+                                )
+                                fig_heatmap.update_layout(height=400)
+                                st.plotly_chart(fig_heatmap, use_container_width=True)
+                            else:
+                                st.warning(f"No heatmap data for {exp_id}")
+                    else:
+                        with cols[i]:
+                            st.warning(f"No FN heatmap data for {exp_id}")
         else:
-            # Single experiment - full width
             exp_id = experiment_ids[0]
             exp_fn_data = combined_fn[combined_fn['experiment_id'] == exp_id]
-            
             if len(exp_fn_data) > 0:
                 fn_heatmap_data = exp_fn_data.pivot_table(
                     index='platform',
@@ -2435,7 +2307,6 @@ def fn_analysis_page(analyzer):
                     aggfunc='count',
                     fill_value=0
                 )
-                
                 if not fn_heatmap_data.empty:
                     fig_heatmap = px.imshow(
                         fn_heatmap_data.values,
@@ -2617,11 +2488,118 @@ def main():
             pip install openpyxl xlrd
             ```
             
+
+            
             **🔧 Full Installation Command:**
             ```bash
             pip install streamlit pandas numpy plotly scikit-learn openpyxl xlrd
             ```
             """)
+
+# --- Caching for file reading and processing ---
+
+@st.cache_data(show_spinner=False)
+def cached_safe_read_file(file_bytes, file_name, file_size):
+    """Cached version of file reading. Returns DataFrame or None."""
+    import io
+    import pandas as pd
+    filename = file_name.lower()
+    file_obj = io.BytesIO(file_bytes)
+    file_obj.name = file_name
+    if filename.endswith(('.xlsx', '.xls')):
+        try:
+            return pd.read_excel(file_obj)
+        except Exception:
+            return None
+    encodings_to_try = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+    for encoding in encodings_to_try:
+        file_obj.seek(0)
+        for sep in ['\t', ',', ';']:
+            file_obj.seek(0)
+            try:
+                df = pd.read_csv(file_obj, encoding=encoding, sep=sep)
+                if len(df.columns) > 5:
+                    return df
+            except Exception:
+                continue
+    return None
+
+@st.cache_data(show_spinner=False)
+def cached_process_experiment_data(df, exp_id):
+    """Cached version of process_experiment_data."""
+    import numpy as np
+    processed_df = df.copy()
+    processed_df['experiment_id'] = exp_id
+    numeric_cols = ['area_px', 'frame', 'cls', 'ground_truth']
+    for col in numeric_cols:
+        if col in processed_df.columns:
+            processed_df[col] = pd.to_numeric(processed_df[col], errors='coerce')
+        else:
+            if col == 'ground_truth':
+                processed_df[col] = 0
+            elif col == 'area_px':
+                processed_df[col] = 1000
+            elif col == 'cls':
+                processed_df[col] = 0
+    string_cols = ['cls_name', 'bb_size', 'platform', 'mistake_kind', 'class_mistake']
+    for col in string_cols:
+        if col in processed_df.columns:
+            processed_df[col] = processed_df[col].astype(str)
+            processed_df[col] = processed_df[col].replace('nan', '-')
+        else:
+            if col == 'bb_size':
+                processed_df[col] = 'medium'
+            elif col == 'platform':
+                processed_df[col] = 'unknown'
+            elif col == 'class_mistake':
+                processed_df[col] = '-'
+    processed_df['TP'] = (processed_df['mistake_kind'] == 'TP').astype(int)
+    processed_df['FP'] = (processed_df['mistake_kind'] == 'FP').astype(int)
+    processed_df['FN'] = (processed_df['mistake_kind'] == 'FN').astype(int)
+    if 'area_px' in processed_df.columns and processed_df['area_px'].notna().any():
+        # Use the same binning as before
+        min_area = processed_df['area_px'].min()
+        max_area = processed_df['area_px'].max()
+        optimal_bin_edges = [min_area, 50, 100, 200, 400, 1000, 5000, 20000, 50000, 100000, max_area]
+        filtered_edges = [edge for edge in optimal_bin_edges if edge <= max_area]
+        if filtered_edges[-1] != max_area:
+            filtered_edges.append(max_area)
+        bin_edges = sorted(list(set(filtered_edges)))
+        bin_labels = []
+        for i in range(len(bin_edges) - 1):
+            start = int(bin_edges[i])
+            end = int(bin_edges[i + 1])
+            if start < 1000 and end < 1000:
+                bin_labels.append(f"{start}-{end}")
+            elif start < 1000:
+                bin_labels.append(f"{start}-{end:,}")
+            else:
+                bin_labels.append(f"{start:,}-{end:,}")
+        categorized = pd.cut(processed_df['area_px'], bins=bin_edges, labels=bin_labels, include_lowest=True, ordered=True)
+        categorized = categorized.astype(str)
+        categorized = categorized.replace('nan', 'Unknown')
+        processed_df['area_category'] = categorized
+    else:
+        processed_df['area_category'] = 'Unknown'
+    if 'confidence' not in processed_df.columns:
+        processed_df['confidence'] = np.where(
+            processed_df['ground_truth'] == 0,
+            np.random.uniform(0.5, 1.0, len(processed_df)),
+            np.nan
+        )
+    initial_count = len(processed_df)
+    processed_df = processed_df.dropna(subset=['bb_id', 'cls_name', 'mistake_kind'])
+    return processed_df
+
+# --- Existing code ...
+# For training data loading and class distribution, cache the calculation
+@st.cache_data(show_spinner=False)
+def cached_train_class_distribution(train_data):
+    if train_data is None or train_data.empty:
+        return {}
+    if 'cls_name' in train_data.columns:
+        return train_data['cls_name'].value_counts().to_dict()
+    return {}
 
 if __name__ == "__main__":
     main()
