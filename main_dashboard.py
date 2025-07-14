@@ -1861,50 +1861,47 @@ def fp_analysis_page(analyzer):
             fig_dist.update_xaxes(tickangle=45)
             st.plotly_chart(fig_dist, use_container_width=True)
     
-    # FP Area Distribution - Separate by Experiment (FIXED WITH CHRONOLOGICAL ORDER)
+    # FP Area Distribution - All Experiments in One Graph (GROUPED BARS)
     st.subheader(f"📐 FP Area Distribution by Experiment ({analysis_mode} Mode, {class_level})")
-    if 'area_category' in combined_fp.columns:
+    if 'area_category' in combined_fp.columns and len(combined_fp) > 0:
         area_category_order = analyzer._get_area_category_order(combined_fp)
-        if len(experiment_ids) > 1:
-            for row_start in range(0, len(experiment_ids), 2):
-                cols = st.columns(min(2, len(experiment_ids) - row_start))
-                for i in range(min(2, len(experiment_ids) - row_start)):
-                    exp_id = experiment_ids[row_start + i]
-                    exp_fp_data = combined_fp[combined_fp['experiment_id'] == exp_id]
-                    if len(exp_fp_data) > 0:
-                        with cols[i]:
-                            fig_area = px.histogram(
-                                exp_fp_data,
-                                x='area_category',
-                                title=f"FP Area Distribution - {exp_id}",
-                                labels={'area_category': 'Area Category', 'count': 'FP Count'}
-                            )
-                            fig_area.update_xaxes(
-                                tickangle=45,
-                                categoryorder='array',
-                                categoryarray=area_category_order
-                            )
-                            fig_area.update_layout(height=400)
-                            st.plotly_chart(fig_area, use_container_width=True)
-                    else:
-                        with cols[i]:
-                            st.warning(f"No FP area data for {exp_id}")
-        else:
-            exp_id = experiment_ids[0]
-            exp_fp_data = combined_fp[combined_fp['experiment_id'] == exp_id]
-            if len(exp_fp_data) > 0:
-                fig_area = px.histogram(
-                    exp_fp_data,
-                    x='area_category',
-                    title=f"FP Area Distribution - {exp_id} ({analysis_mode} Mode, {class_level})",
-                    labels={'area_category': 'Area Category', 'count': 'FP Count'}
-                )
-                fig_area.update_xaxes(
-                    tickangle=45,
-                    categoryorder='array',
-                    categoryarray=area_category_order
-                )
-                st.plotly_chart(fig_area, use_container_width=True)
+        
+        # Create grouped bar chart with all experiments
+        fig_area = px.histogram(
+            combined_fp,
+            x='area_category',
+            color='experiment_id',
+            barmode='group',
+            title=f"FP Area Distribution - All Experiments ({analysis_mode} Mode, {class_level})",
+            labels={'area_category': 'Area Category', 'count': 'FP Count', 'experiment_id': 'Experiment'}
+        )
+        
+        # Apply chronological ordering to area categories
+        fig_area.update_xaxes(
+            tickangle=45,
+            categoryorder='array',
+            categoryarray=area_category_order
+        )
+        
+        # Make the chart wider and taller for better visibility
+        fig_area.update_layout(
+            height=500,
+            legend_title="Experiments",
+            showlegend=True
+        )
+        
+        st.plotly_chart(fig_area, use_container_width=True)
+        
+        # Show summary statistics
+        fp_area_summary = combined_fp.groupby(['experiment_id', 'area_category']).size().reset_index(name='count')
+        total_fp_by_exp = combined_fp.groupby('experiment_id').size().reset_index(name='total_fp')
+        
+        st.write("**FP Area Distribution Summary:**")
+        for exp_id in experiment_ids:
+            exp_total = total_fp_by_exp[total_fp_by_exp['experiment_id'] == exp_id]['total_fp'].iloc[0] if len(total_fp_by_exp[total_fp_by_exp['experiment_id'] == exp_id]) > 0 else 0
+            st.write(f"• **{exp_id}**: {exp_total} total FPs")
+    else:
+        st.warning("No FP area data available for the selected filters.")
     
     # FP Heatmap - Separate by Experiment
     st.subheader(f"🔥 FP Heatmap (Platform vs {class_level}) by Experiment ({analysis_mode} Mode)")
@@ -2217,50 +2214,47 @@ def fn_analysis_page(analyzer):
             fig_dist.update_xaxes(tickangle=45)
             st.plotly_chart(fig_dist, use_container_width=True)
     
-    # FN Area Distribution - Separate by Experiment (FIXED WITH CHRONOLOGICAL ORDER)
+    # FN Area Distribution - All Experiments in One Graph (GROUPED BARS)
     st.subheader(f"📐 FN Area Distribution by Experiment ({analysis_mode} Mode, {class_level})")
-    if 'area_category' in combined_fn.columns:
+    if 'area_category' in combined_fn.columns and len(combined_fn) > 0:
         area_category_order = analyzer._get_area_category_order(combined_fn)
-        if len(experiment_ids) > 1:
-            for row_start in range(0, len(experiment_ids), 2):
-                cols = st.columns(min(2, len(experiment_ids) - row_start))
-                for i in range(min(2, len(experiment_ids) - row_start)):
-                    exp_id = experiment_ids[row_start + i]
-                    exp_fn_data = combined_fn[combined_fn['experiment_id'] == exp_id]
-                    if len(exp_fn_data) > 0:
-                        with cols[i]:
-                            fig_area = px.histogram(
-                                exp_fn_data,
-                                x='area_category',
-                                title=f"FN Area Distribution - {exp_id}",
-                                labels={'area_category': 'Area Category', 'count': 'FN Count'}
-                            )
-                            fig_area.update_xaxes(
-                                tickangle=45,
-                                categoryorder='array',
-                                categoryarray=area_category_order
-                            )
-                            fig_area.update_layout(height=400)
-                            st.plotly_chart(fig_area, use_container_width=True)
-                    else:
-                        with cols[i]:
-                            st.warning(f"No FN area data for {exp_id}")
-        else:
-            exp_id = experiment_ids[0]
-            exp_fn_data = combined_fn[combined_fn['experiment_id'] == exp_id]
-            if len(exp_fn_data) > 0:
-                fig_area = px.histogram(
-                    exp_fn_data,
-                    x='area_category',
-                    title=f"FN Area Distribution - {exp_id} ({analysis_mode} Mode, {class_level})",
-                    labels={'area_category': 'Area Category', 'count': 'FN Count'}
-                )
-                fig_area.update_xaxes(
-                    tickangle=45,
-                    categoryorder='array',
-                    categoryarray=area_category_order
-                )
-                st.plotly_chart(fig_area, use_container_width=True)
+        
+        # Create grouped bar chart with all experiments
+        fig_area = px.histogram(
+            combined_fn,
+            x='area_category',
+            color='experiment_id',
+            barmode='group',
+            title=f"FN Area Distribution - All Experiments ({analysis_mode} Mode, {class_level})",
+            labels={'area_category': 'Area Category', 'count': 'FN Count', 'experiment_id': 'Experiment'}
+        )
+        
+        # Apply chronological ordering to area categories
+        fig_area.update_xaxes(
+            tickangle=45,
+            categoryorder='array',
+            categoryarray=area_category_order
+        )
+        
+        # Make the chart wider and taller for better visibility
+        fig_area.update_layout(
+            height=500,
+            legend_title="Experiments",
+            showlegend=True
+        )
+        
+        st.plotly_chart(fig_area, use_container_width=True)
+        
+        # Show summary statistics
+        fn_area_summary = combined_fn.groupby(['experiment_id', 'area_category']).size().reset_index(name='count')
+        total_fn_by_exp = combined_fn.groupby('experiment_id').size().reset_index(name='total_fn')
+        
+        st.write("**FN Area Distribution Summary:**")
+        for exp_id in experiment_ids:
+            exp_total = total_fn_by_exp[total_fn_by_exp['experiment_id'] == exp_id]['total_fn'].iloc[0] if len(total_fn_by_exp[total_fn_by_exp['experiment_id'] == exp_id]) > 0 else 0
+            st.write(f"• **{exp_id}**: {exp_total} total FNs")
+    else:
+        st.warning("No FN area data available for the selected filters.")
     
     # FN Heatmap - Separate by Experiment
     st.subheader(f"🔥 FN Heatmap (Platform vs {class_level}) by Experiment ({analysis_mode} Mode)")
@@ -2488,8 +2482,6 @@ def main():
             pip install openpyxl xlrd
             ```
             
-
-            
             **🔧 Full Installation Command:**
             ```bash
             pip install streamlit pandas numpy plotly scikit-learn openpyxl xlrd
@@ -2591,7 +2583,6 @@ def cached_process_experiment_data(df, exp_id):
     processed_df = processed_df.dropna(subset=['bb_id', 'cls_name', 'mistake_kind'])
     return processed_df
 
-# --- Existing code ...
 # For training data loading and class distribution, cache the calculation
 @st.cache_data(show_spinner=False)
 def cached_train_class_distribution(train_data):
